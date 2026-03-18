@@ -1,0 +1,11 @@
+torch>=2.1.0
+transformers>=4.40.0
+airllm>=0.9.0
+accelerate>=0.27.0
+huggingface_hub>=0.22.0
+pyyaml>=6.0
+rich>=13.0.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+bitsandbytes>=0.41.0
+scipy
