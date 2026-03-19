@@ -1,4 +1,7 @@
 import time
+from dotenv import load_dotenv
+load_dotenv()
+
 import yaml
 import logging
 from router.classifier import RouterClassifier

@@ -60,20 +60,42 @@ class ModelLoader:
             tokenizer = AutoTokenizer.from_pretrained(model_id)
             
             if is_router:
-                # Standard loading for the tiny router model (0.5B fits easily)
+                logger.debug(f"[{model_id}] Router loading path detected. Using AutoModelForCausalLM.")
                 from transformers import AutoModelForCausalLM
+                # Use bfloat16 for stability on 3050 series if supported, or float16
                 model = AutoModelForCausalLM.from_pretrained(
                     model_id,
-                    torch_dtype="auto",
-                    device_map="auto"
+                    torch_dtype=torch.float16,
+                    device_map="cuda", # Force direct CUDA to avoid map overhead
                 )
+                logger.debug(f"[{model_id}] Router model loaded on CUDA.")
             else:
-                # AirLLM weight-slicing for large specialists
+                logger.debug(f"[{model_id}] Specialist loading path detected. Using AirLLM.")
                 model = AutoModel.from_pretrained(
                     model_id,
                     compression=self.compression,
                     hf_token=None
                 )
+                logger.debug(f"[{model_id}] AirLLM model initialized.")
+            
+            # --- CRITICAL PATCHES FOR TRANSFORMERS COMPATIBILITY ---
+            model_class = type(model)
+            if not hasattr(model_class, '_is_stateful'):
+                model_class._is_stateful = False
+
+            # Force legacy cache off globally to prevent looping
+            try:
+                if hasattr(model, 'config'):
+                    model.config.use_cache = False  # Disable cache for inference
+                    model.config.cache_implementation = None
+                
+                if hasattr(model, 'generation_config'):
+                    model.generation_config.use_cache = False
+                    model.generation_config.cache_implementation = None
+                    if not is_router:
+                        model.generation_config.do_sample = False
+            except Exception as e:
+                logger.debug(f"[{model_id}] Non-critical: Failed to apply cache patch: {e}")
             
             load_time = time.time() - start_time
             logger.info(f"Loaded {model_id} in {load_time:.2f}s")

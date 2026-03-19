@@ -1,4 +1,11 @@
+from dotenv import load_dotenv
+load_dotenv()
+
+from dotenv import load_dotenv
+load_dotenv()
+
 import sys
+import argparse
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -20,7 +27,8 @@ def show_availability(router: LLMRouter):
 
     # Router
     router_id = router.config["router"]["model_id"]
-    status = "[green]Ready[/green]" if availability.get(router_id) else "[yellow]Download Required[/yellow]"
+    is_router_local = availability.get(router_id)
+    status = "[green]Ready[/green]" if is_router_local else "[yellow]Download Required[/yellow]"
     table.add_row("Router", "N/A", router_id, status)
     
     # Specialists
@@ -33,6 +41,10 @@ def show_availability(router: LLMRouter):
     console.print("[dim italic white]* Download will happen automatically on first query for each domain.[/dim italic white]\n")
 
 def main():
+    parser = argparse.ArgumentParser(description="MELLM - LLM Router CLI")
+    parser.add_argument("--preload", type=str, help="Preload a specific domain model or 'all'")
+    args = parser.parse_args()
+
     console.print(Panel.fit(
         "[bold cyan]MELLM - LLM Router[/bold cyan]\n"
         "[italic white]Consumer-Hardware MoE Orchestration System[/italic white]",
@@ -43,7 +55,30 @@ def main():
         # Initialize router (orchestrator handles config loading)
         router = LLMRouter()
         
-        # Show availability dashboard before starting
+        if args.preload:
+            specialists = router.config["specialists"]
+            target_domains = []
+            
+            if args.preload.lower() == "all":
+                target_domains = list(specialists.keys())
+            elif args.preload.lower() in specialists:
+                target_domains = [args.preload.lower()]
+            else:
+                console.print(f"[bold red]Error:[/bold red] Invalid domain '{args.preload}'. Valid domains: {', '.join(specialists.keys())}, all")
+                sys.exit(1)
+                
+            for domain in target_domains:
+                m_id = specialists[domain]["model_id"]
+                console.print(f"[bold blue]Preloading {domain}...[/bold blue]")
+                # Use standard get/unload cycle to trigger download and slicing
+                router.loader.get(m_id)
+                router.loader.unload(m_id)
+                console.print(f"[bold green]Done: {domain} cached.[/bold green]")
+            
+            console.print("\n[bold green]Preloading complete.[/bold green]")
+            sys.exit(0)
+
+        # Show availability dashboard before starting normal mode
         show_availability(router)
         
     except Exception as e:

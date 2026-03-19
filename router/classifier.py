@@ -44,10 +44,15 @@ class RouterClassifier:
         )
         model_inputs = tokenizer([text], return_tensors="pt").to(device)
 
+        from transformers import GenerationConfig
+        gen_config = GenerationConfig(
+            max_new_tokens=256
+        )
+
         generated_ids = model.generate(
             **model_inputs,
-            max_new_tokens=256,
-            do_sample=False
+            generation_config=gen_config,
+            use_cache=False
         )
         
         generated_ids = [

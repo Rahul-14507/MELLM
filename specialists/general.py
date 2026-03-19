@@ -8,10 +8,8 @@ class GeneralSpecialist(BaseSpecialist):
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=0.7,
-                top_p=0.9,
-                do_sample=True
+                max_new_tokens=min(self.max_new_tokens, 300),
+                use_cache=False
             )
         
         response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)

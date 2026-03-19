@@ -1,0 +1,8 @@
+.env
+model_cache/
+__pycache__/
+*.pyc
+.venv/
+__pycache__/
+.venv*
+*.pyc
