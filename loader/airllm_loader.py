@@ -121,11 +121,3 @@ class ModelLoader:
             import gc
             gc.collect()
             logger.info(f"Cleared VRAM after unloading {model_id}")
-
-    def unload(self, model_id: str):
-        if model_id in self.cache:
-            logger.info(f"Unloading model: {model_id}")
-            del self.cache[model_id]
-            import gc
-            gc.collect()
-            logger.info(f"Cleared VRAM after unloading {model_id}")

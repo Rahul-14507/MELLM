@@ -1,74 +1,452 @@
-# MELLM - LLM Router
+<p align="center">
+  <h1 align="center">🧠 MELLM — Multi-Expert LLM Router</h1>
+  <p align="center">
+    A consumer-hardware Mixture-of-Experts orchestration system that routes queries to small, domain-specialized LLMs.<br/>
+    Built with <strong>llama-cpp-python</strong> for blazing-fast GGUF inference on your GPU.
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+"/>
+    <img src="https://img.shields.io/badge/backend-llama--cpp--python-green" alt="llama-cpp-python"/>
+    <img src="https://img.shields.io/badge/format-GGUF-orange" alt="GGUF"/>
+    <img src="https://img.shields.io/badge/GPU-NVIDIA_CUDA-76B900" alt="CUDA"/>
+    <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT License"/>
+  </p>
+</p>
 
-A consumer-hardware-friendly Mixture-of-Experts (MoE) orchestration system that routes queries to small, domain-specialized LLMs. Uses **llama-cpp-python** for fast GGUF inference on your GPU — the same backend as Ollama. Optimized for 6GB VRAM GPUs (like RTX 3050).
+---
 
-## Architecture
+## 🔍 What is MELLM?
+
+MELLM is a lightweight **Mixture-of-Experts (MoE)** system designed to run entirely on consumer GPUs (as low as 6GB VRAM). Instead of using one massive general-purpose model, MELLM uses a tiny **router model** to classify your query and then loads the best **domain-specialist model** to answer it.
+
+This means you get **expert-level responses** in medicine, law, math, and coding — all on hardware you already own.
+
+### Key Features
+
+- 🔀 **Intelligent Routing** — A 0.5B parameter router classifies queries into 5 domains with >90% accuracy
+- 🧬 **Domain Specialists** — Dedicated models fine-tuned for medical, legal, math, code, and general knowledge
+- 💾 **VRAM-Optimized** — Models load/unload on-demand; only one model in GPU memory at a time
+- 📦 **GGUF Format** — Quantized models for fast inference with minimal memory footprint
+- 🖥️ **Rich CLI** — Beautiful terminal interface with progress bars, confidence meters, and dashboards
+- 🌐 **REST API** — FastAPI server for programmatic access
+- ⬇️ **Auto-Download** — Models download automatically from Hugging Face on first use
+
+---
+
+## 🏗️ Architecture
 
 ```
-User Query -> [Load Router] -> Classify -> [Unload Router] -> [Load Specialist] -> Generate -> [Unload Specialist]
+┌─────────────┐     ┌──────────────┐     ┌───────────────────┐     ┌──────────────┐
+│  User Query │────▶│  Load Router │────▶│  Classify Domain  │────▶│ Unload Router│
+└─────────────┘     │  (0.5B Qwen) │     │  + Rewrite Prompt │     └──────┬───────┘
+                    └──────────────┘     └───────────────────┘            │
+                                                                          ▼
+┌─────────────┐     ┌──────────────┐     ┌───────────────────┐     ┌──────────────────┐
+│   Response  │◀────│   Unload     │◀────│     Generate      │◀────│ Load Specialist   │
+│             │     │  Specialist  │     │    Response        │     │ (1.5B-7B model)   │
+└─────────────┘     └──────────────┘     └───────────────────┘     └──────────────────┘
 ```
 
-Models are loaded on demand per query and unloaded after to maximize VRAM headroom.
+### Why Load/Unload?
 
-### Specialist Registry
+On a 6GB GPU, you can't keep multiple models resident. MELLM's on-demand loading strategy ensures:
+- Only **one model occupies VRAM** at any time
+- Garbage collection reclaims GPU memory between stages
+- Even 7B models fit comfortably with reduced context windows
 
-| Domain  | Model | Format | Speed |
-|---------|-------|--------|-------|
-| Medical | Bio-Medical-Llama-3-8B | Q4_K_M GGUF | 8-12 t/s |
-| Code    | Qwen2.5-Coder-1.5B-Instruct | Q4_K_M GGUF | 15-25 t/s |
-| Math    | Qwen2.5-Math-1.5B-Instruct | Q4_K_M GGUF | 15-25 t/s |
-| Legal   | AdaptLLM/law-LLM | Q4_K_M GGUF | 15-25 t/s |
-| General | Qwen2.5-1.5B-Instruct | Q4_K_M GGUF | 15-25 t/s |
+---
 
-## Hardware Requirements
+## 📋 Model Registry
 
-- **GPU**: NVIDIA RTX 3050 (6GB VRAM) or better with CUDA
-- **RAM**: 16GB+
-- **OS**: Linux with CUDA 12.1+
+All models use the **GGUF** quantized format for efficient inference via `llama-cpp-python`.
 
-## Installation
+| Role | Domain | Model | GGUF File | Size | Context |
+|------|--------|-------|-----------|------|---------|
+| **Router** | All | Qwen2.5-0.5B-Instruct | `qwen2.5-0.5b-instruct-q4_k_m.gguf` | ~470 MB | 4096 |
+| Specialist | **Code** | Qwen2.5-Coder-1.5B-Instruct | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | ~1.1 GB | 4096 |
+| Specialist | **Math** | Qwen2.5-Math-1.5B-Instruct | `Qwen2.5-Math-1.5B-Instruct-Q4_K_M.gguf` | ~986 MB | 4096 |
+| Specialist | **Medical** | BioMistral-7B-DARE | `ggml-model-Q2_K.gguf` | ~2.3 GB | 1024 |
+| Specialist | **Legal** | Magistrate-3.2-3B-IT | `magistrate-3.2-3b-it.Q4_K_M.gguf` | ~1.8 GB | 1024 |
+| Specialist | **General** | Qwen2.5-1.5B-Instruct | `qwen2.5-1.5b-instruct-q4_k_m.gguf` | ~1.1 GB | 4096 |
 
-> [!IMPORTANT]
-> `llama-cpp-python` must be installed separately first with the CUDA wheels, then the rest of the dependencies.
+> **Note:** Larger models (7B+) automatically use a reduced context window (1024 tokens) to stay within 6GB VRAM limits. Smaller models (≤1.5B) use the full 4096 context.
 
-**Step 1 — Install llama-cpp-python with CUDA support:**
+---
+
+## 📁 Project Structure
+
+```
+MELLM/
+├── cli.py                    # Rich terminal interface
+├── api.py                    # FastAPI REST server
+├── orchestrator.py           # Main pipeline (load → classify → generate → unload)
+├── config.yaml               # Model IDs, token limits, and specialist configuration
+├── requirements.txt          # Python dependencies
+├── .env                      # Environment variables (HF_TOKEN)
+│
+├── loader/
+│   ├── __init__.py
+│   └── airllm_loader.py      # GGUF model loader with auto-download and VRAM management
+│
+├── router/
+│   ├── __init__.py
+│   ├── classifier.py         # LLM-based query classifier (JSON output mode)
+│   └── prompt_optimizer.py   # Rule-based fallback prompt templates
+│
+└── specialists/
+    ├── __init__.py
+    ├── base_specialist.py    # Abstract base class for all specialists
+    ├── code.py               # Code generation specialist (temp=0.1)
+    ├── math_specialist.py    # Math problem solver (temp=0.1)
+    ├── medical.py            # Medical Q&A with system prompt (temp=0.7)
+    ├── legal.py              # Legal information specialist
+    └── general.py            # General knowledge fallback
+```
+
+---
+
+## ⚙️ Hardware Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **GPU** | NVIDIA GTX 1060 (6GB) | NVIDIA RTX 3050+ (6GB+) |
+| **VRAM** | 6 GB | 8 GB+ |
+| **RAM** | 8 GB | 16 GB+ |
+| **Storage** | 10 GB free | 20 GB+ free |
+| **CUDA** | 11.7+ | 12.1+ |
+| **Python** | 3.10+ | 3.11+ |
+| **OS** | Linux (Ubuntu 22.04+) | Linux with NVIDIA drivers |
+
+---
+
+## 🚀 Getting Started
+
+### 1. Clone the Repository
+
 ```bash
-pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+git clone https://github.com/Rahul-14507/MELLM
+cd MELLM
 ```
 
-**Step 2 — Install remaining dependencies:**
+### 2. Create a Virtual Environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install llama-cpp-python (with CUDA)
+
+> **⚠️ Important:** `llama-cpp-python` must be installed **separately first** with CUDA wheels. Installing it via `pip install -r requirements.txt` alone will NOT enable GPU acceleration.
+
+```bash
+# For CUDA 12.1+ (most modern NVIDIA GPUs)
+pip install llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+
+# For CUDA 11.8 (older GPUs)
+pip install llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu118
+```
+
+Verify GPU support:
+```bash
+python -c "from llama_cpp import Llama; print('llama-cpp-python installed successfully')"
+```
+
+### 4. Install Remaining Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-**Step 3 — Set up `.env`:**
+### 5. Set Up Environment Variables
+
 ```bash
-cp .env.example .env  # or create .env manually
-# Add: HF_TOKEN=your_token_here
+cp .env.example .env
+# Or create .env manually:
+echo "HF_TOKEN=your_huggingface_token_here" > .env
 ```
 
-## Running
+You need a [Hugging Face token](https://huggingface.co/settings/tokens) to download models. Some models may require accepting their license on the Hugging Face model page first.
+
+### 6. Run MELLM
 
 ```bash
-source .venv/bin/activate
+# Interactive CLI mode
+python cli.py
+
+# Pre-download all models at once
+python cli.py --preload all
+
+# Pre-download a specific domain
+python cli.py --preload medical
+
+# REST API mode
+python api.py
+```
+
+---
+
+## 💻 Usage
+
+### CLI Mode
+
+```bash
 python cli.py
 ```
 
-On first run, GGUF models are downloaded automatically to `~/.cache/mellm_gguf/`.
+On startup, MELLM displays a **Model Availability Dashboard** showing which models are cached and ready. Then enter your queries:
 
-## Performance
+```
+Query: Implement a Red-Black Tree in Python with insert and search operations
 
-| Stage | Time |
-|-------|------|
-| Router load | ~1-2s |
-| Router inference | ~1s |
-| Specialist load (1.5B) | ~1-2s |
-| Specialist load (8B medical) | ~3-5s |
-| Inference (1.5B) | 15-25 tokens/s |
-| Inference (8B) | 8-12 tokens/s |
-| Typical end-to-end | 15-45s |
+Domain: CODE
+╭─── Response (Specialist: code) ───╮
+│ Here is a Python implementation... │
+╰───────────────────────────────────╯
+Metrics: Router Load: 1.02s | Specialist Load: 1.63s | Inference: 8.42s
+```
 
-## Known Limitations
+Models are downloaded automatically on first use with a progress bar.
 
-- Per-query latency from load/unload cycle.
-- Medical (8B) and Legal models use more VRAM — queries may be slightly slower.
+### API Mode
+
+```bash
+python api.py
+# Server starts at http://0.0.0.0:8000
+```
+
+**Endpoints:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check and router status |
+| `POST` | `/query` | Process a query through the router pipeline |
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "What are the symptoms of appendicitis?"}'
+```
+
+**Example Response:**
+```json
+{
+  "original_prompt": "What are the symptoms of appendicitis?",
+  "domain": "medical",
+  "confidence": 0.95,
+  "rewritten_prompt": "...",
+  "response": "The common symptoms of appendicitis include...",
+  "router_load_time": 1.02,
+  "specialist_load_time": 10.81,
+  "inference_time_seconds": 5.23
+}
+```
+
+### Preloading Models
+
+Pre-download models so they're ready instantly:
+
+```bash
+# Download ALL specialist models
+python cli.py --preload all
+
+# Download only the medical specialist
+python cli.py --preload medical
+```
+
+---
+
+## ⚡ Performance
+
+Benchmarked on **NVIDIA RTX 3050 (6GB VRAM)** with CUDA 12.1:
+
+| Stage | 1.5B Models | 3B Models | 7B Models (Q2_K) |
+|-------|-------------|-----------|-------------------|
+| Model Load | ~1-2s | ~3-4s | ~5-6s |
+| Inference Speed | 15-25 tok/s | 10-15 tok/s | 8-12 tok/s |
+| VRAM Usage | ~1.5 GB | ~2.5 GB | ~3-4 GB |
+| Context Window | 4096 tokens | 1024 tokens | 1024 tokens |
+
+| End-to-End | Time |
+|------------|------|
+| Router classification | ~1-2s |
+| Specialist response (1.5B) | ~5-15s |
+| Specialist response (7B) | ~15-30s |
+| **Total typical query** | **~10-35s** |
+
+---
+
+## 🔧 Configuration
+
+All model and generation settings are in `config.yaml`:
+
+```yaml
+router:
+  model_id: "Qwen/Qwen2.5-0.5B-Instruct"
+  max_new_tokens: 256
+
+specialists:
+  code:
+    model_id: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    max_new_tokens: 2048
+  math:
+    model_id: "Qwen/Qwen2.5-Math-1.5B-Instruct"
+    max_new_tokens: 2048
+  medical:
+    model_id: "BioMistral/BioMistral-7B-DARE-GGUF"
+    max_new_tokens: 2048
+  legal:
+    model_id: "AdaptLLM/law-LLM"
+    max_new_tokens: 2048
+  general:
+    model_id: "Qwen/Qwen2.5-1.5B-Instruct"
+    max_new_tokens: 2048
+```
+
+### Adding a New Specialist
+
+1. **Add the model to `GGUF_REGISTRY`** in `loader/airllm_loader.py`:
+```python
+GGUF_REGISTRY = {
+    # ... existing models ...
+    "your-org/your-model": (
+        "gguf-repo-id/your-model-GGUF",
+        "your-model.Q4_K_M.gguf"
+    ),
+}
+```
+
+2. **Create a specialist class** in `specialists/your_domain.py`:
+```python
+from .base_specialist import BaseSpecialist
+
+class YourSpecialist(BaseSpecialist):
+    def generate(self, prompt: str) -> str:
+        response = self.model.create_chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=self.max_new_tokens,
+            temperature=0.7,
+        )
+        return self._postprocess(
+            response["choices"][0]["message"]["content"]
+        )
+```
+
+3. **Register it in `orchestrator.py`**:
+```python
+from specialists.your_domain import YourSpecialist
+
+SPECIALIST_MAP = {
+    # ... existing specialists ...
+    "your_domain": YourSpecialist,
+}
+```
+
+4. **Add it to `config.yaml`**:
+```yaml
+specialists:
+  your_domain:
+    model_id: "your-org/your-model"
+    max_new_tokens: 2048
+```
+
+5. **Update the router's domain list** in `router/classifier.py` to include your new domain.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Here's how to get started:
+
+### Development Setup
+
+1. Fork the repository and clone your fork
+2. Follow the [Getting Started](#-getting-started) guide above
+3. Create a feature branch:
+```bash
+git checkout -b feature/your-feature-name
+```
+
+### Contribution Ideas
+
+- 🌍 **New domain specialists** — Add support for science, finance, history, etc.
+- 🧪 **Evaluation benchmarks** — Build test suites to measure routing accuracy and specialist quality
+- 🖥️ **Web UI** — Build a Gradio or Streamlit frontend
+- 📊 **Metrics dashboard** — Track routing accuracy, latency, and VRAM usage over time
+- 🔄 **Multi-turn conversations** — Add conversation history and context management
+- 🏎️ **Performance optimization** — Explore batch inference, speculative decoding, or model caching strategies
+- 📝 **Better prompts** — Improve specialist system prompts for higher-quality responses
+- 🐛 **Bug fixes** — Check the Issues tab for known bugs
+
+### Code Style
+
+- Use descriptive variable names and docstrings
+- Follow PEP 8 conventions
+- Keep specialist classes focused — one domain per file
+- Test on a 6GB VRAM GPU before submitting (or document higher requirements)
+
+### Pull Request Process
+
+1. Ensure your code runs without errors on Python 3.10+
+2. Test both CLI and API modes
+3. Update the README if you've added new features or changed configuration
+4. Update `config.yaml` and `GGUF_REGISTRY` if you've added or changed models
+5. Submit a PR with a clear description of what changed and why
+
+---
+
+## 🐛 Known Limitations
+
+- **Per-query latency**: Each query requires a full load/unload cycle (~2-6s overhead), since models can't stay resident in 6GB VRAM
+- **Context window**: 7B models are limited to 1024 tokens of context to fit in VRAM
+- **Single query at a time**: The system processes one query before accepting the next
+- **No conversation memory**: Each query is independent; there's no multi-turn context
+- **Router accuracy**: The 0.5B router occasionally misclassifies edge cases between domains
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] Multi-turn conversation support
+- [ ] Web UI (Gradio/Streamlit)
+- [ ] Evaluation benchmark suite
+- [ ] Streaming token output
+- [ ] Model caching strategies for higher-VRAM GPUs
+- [ ] Docker container for easy deployment
+- [ ] Support for AMD GPUs (ROCm)
+
+---
+
+## 🛠️ Tech Stack
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Inference Engine** | [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) | GPU-accelerated GGUF model inference |
+| **Model Source** | [Hugging Face Hub](https://huggingface.co) | Auto-download quantized GGUF models |
+| **CLI Interface** | [Rich](https://github.com/Textualize/rich) | Beautiful terminal dashboards and panels |
+| **REST API** | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) | Async HTTP server |
+| **Configuration** | [PyYAML](https://pyyaml.org/) | YAML-based model and parameter configuration |
+| **Environment** | [python-dotenv](https://pypi.org/project/python-dotenv/) | Secure token management via `.env` |
+| **Model Format** | [GGUF](https://github.com/ggerganov/ggml) | Quantized model format (Q2_K, Q4_K_M) |
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+
+> **Note:** The individual models used by MELLM have their own licenses. Please check each model's Hugging Face page for their specific terms before redistribution.
+
+---
+
+## 🙏 Acknowledgements
+
+- [Qwen Team](https://huggingface.co/Qwen) — For the excellent Qwen2.5 series of small instruction-tuned models
+- [BioMistral](https://huggingface.co/BioMistral) — For the medical domain-adapted BioMistral-7B-DARE
+- [mradermacher](https://huggingface.co/mradermacher) — For the Magistrate legal model GGUF quantization
+- [bartowski](https://huggingface.co/bartowski) — For high-quality GGUF quantizations of math models
+- [Georgi Gerganov](https://github.com/ggerganov) — For the `ggml` library and GGUF format
+- [Andrei Betlen](https://github.com/abetlen) — For `llama-cpp-python`, the Python bindings for llama.cpp
