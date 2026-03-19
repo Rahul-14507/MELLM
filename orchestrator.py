@@ -49,7 +49,7 @@ class LLMRouter:
         # 1. Router Cycle
         router_model_id = self.config["router"]["model_id"]
         logger.info("Loading router model...")
-        router_model, router_tokenizer, router_load_time = self.loader.get(router_model_id)
+        router_model, router_tokenizer, router_load_time = self.loader.get(router_model_id, is_router=True)
         
         decision = self.router_logic.classify(router_model, router_tokenizer, user_prompt)
         

@@ -32,16 +32,22 @@ User Query -> [Load Router] -> Classify -> [Unload Router] -> [Load Specialist] 
    ```
 2. Configure models in `config.yaml` (default IDs are pre-configured).
 
-## Usage
-### CLI Interface
-```bash
-python cli.py
-```
+## How to Run
+Follow these steps exactly to start the system:
 
-### REST API
-```bash
-uvicorn api:app --host 0.0.0.0 --port 8000
-```
+1. **Enter the Project Directory**:
+   ```bash
+   cd /mnt/9A325D7C325D5E77/Projects/MELLM
+   ```
+2. **Activate the Environment**:
+   ```bash
+   source .venv/bin/activate
+   ```
+3. **Launch the CLI**:
+   ```bash
+   python cli.py
+   ```
+   *Note: On the very first run, it will scan your local models and may download the Router model (0.5B). This is normal.*
 
 ## Known Limitations
 - **Per-Query Latency**: Both models are loaded/unloaded for every query.

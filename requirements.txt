@@ -8,4 +8,5 @@ rich>=13.0.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 bitsandbytes>=0.41.0
-scipy
+optimum
+setuptools
