@@ -17,16 +17,16 @@ GGUF_REGISTRY = {
         "qwen2.5-1.5b-instruct-q4_k_m.gguf"
     ),
     "Qwen/Qwen2.5-Math-1.5B-Instruct": (
-        "Qwen/Qwen2.5-Math-1.5B-Instruct-GGUF",
-        "qwen2.5-math-1.5b-instruct-q4_k_m.gguf"
+        "bartowski/Qwen2.5-Math-1.5B-Instruct-GGUF",
+        "Qwen2.5-Math-1.5B-Instruct-Q4_K_M.gguf"
     ),
-    "ContactDoctor/Bio-Medical-Llama-3-8B": (
-        "bartowski/Bio-Medical-Llama-3-8B-GGUF",
-        "Bio-Medical-Llama-3-8B-Q4_K_M.gguf"
+    "BioMistral/BioMistral-7B-DARE-GGUF": (
+        "BioMistral/BioMistral-7B-DARE-GGUF",
+        "ggml-model-Q2_K.gguf"
     ),
     "AdaptLLM/law-LLM": (
-        "AdaptLLM/law-LLM-GGUF",
-        "law-llm-q4_k_m.gguf"
+        "mradermacher/magistrate-3.2-3b-it-GGUF",
+        "magistrate-3.2-3b-it.Q4_K_M.gguf"
     ),
     "Qwen/Qwen2.5-0.5B-Instruct": (
         "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
@@ -38,7 +38,7 @@ GGUF_REGISTRY = {
 class ModelLoader:
     def __init__(self, config: dict = None, compression: str = "4bit"):
         self.config = config or {}
-        self.cache: dict = {}
+        self.cache: dict = {} # Restored for preloading/unload compatibility
         self.cache_dir = Path.home() / ".cache" / "mellm_gguf"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Initialized ModelLoader with llama-cpp-python (GPU inference)")
@@ -71,7 +71,7 @@ class ModelLoader:
             logger.info(f"Found cached GGUF: {local_path}")
             return local_path
 
-        logger.info(f"Downloading GGUF: {repo_id}/{filename}")
+        logger.info(f"Downloading GGUF: {repo_id}/{filename} (This may take a while...)")
         downloaded = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
@@ -82,8 +82,6 @@ class ModelLoader:
     def get(self, model_id: str, is_router: bool = False):
         """
         Loads and returns a Llama model instance.
-        is_router is kept for API compatibility but is unused — all models
-        use the same llama-cpp-python backend.
         Returns (model, None, load_time) to maintain compatibility with orchestrator.
         """
         if model_id in self.cache:
@@ -96,19 +94,33 @@ class ModelLoader:
 
         gguf_path = self._get_gguf_path(model_id)
 
+        # In ModelLoader.get(), set n_ctx based on model size
+        # We also treat the legal model as 'large' because law-chat is ~7B
+        is_large = any(x in model_id.lower() for x in ["7b", "8b", "law"])
+        n_ctx = 1024 if is_large else 4096
+        
         model = Llama(
             model_path=str(gguf_path),
             n_gpu_layers=-1,   # offload all layers to GPU
-            n_ctx=4096,        # context window
+            n_ctx=n_ctx,
             n_batch=512,
             verbose=False
         )
-
+        
         load_time = time.time() - start
         logger.info(f"Loaded {model_id} in {load_time:.2f}s")
-
+        
+        # Keep track in cache for preloading/orchestration
         self.cache[model_id] = (model, load_time)
         return model, None, load_time
+
+    def unload(self, model_id: str):
+        if model_id in self.cache:
+            logger.info(f"Unloading model: {model_id}")
+            del self.cache[model_id]
+            import gc
+            gc.collect()
+            logger.info(f"Cleared VRAM after unloading {model_id}")
 
     def unload(self, model_id: str):
         if model_id in self.cache:

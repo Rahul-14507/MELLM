@@ -16,9 +16,16 @@ class RouterClassifier:
     def __init__(self):
         self.optimizer = PromptOptimizer()
         self.system_prompt = (
-            "You are a specialized routing LLM. Your task is to classify user queries into one of these domains: "
-            "medical, code, math, legal, general. "
-            "You must also rewrite the prompt to be optimized for a domain specialist. "
+            "You are a specialized routing LLM. Your task is to classify user queries "
+            "into one of these domains: medical, code, math, legal, general.\n"
+            "You must also rewrite the prompt to be optimized for a domain specialist.\n\n"
+            "Domain rules:\n"
+            "- code: any query asking to write, implement, or explain code or algorithms, "
+            "regardless of programming language or data structure name.\n"
+            "- math: equations, integrals, derivatives, proofs, numerical problems.\n"
+            "- medical: health, disease, symptoms, diagnosis, treatment.\n"
+            "- legal: law, rights, contracts, lawsuits, legal procedures.\n"
+            "- general: philosophy, history, culture, concepts — only if none of the above fit.\n\n"
             "You MUST respond ONLY with a JSON object in this exact format:\n"
             "{\n"
             "  \"domain\": \"string\",\n"

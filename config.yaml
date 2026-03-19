@@ -5,16 +5,16 @@ router:
 specialists:
   code:
     model_id: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
-    max_new_tokens: 512
+    max_new_tokens: 2048
   math:
     model_id: "Qwen/Qwen2.5-Math-1.5B-Instruct"
-    max_new_tokens: 512
+    max_new_tokens: 2048
   medical:
-    model_id: "ContactDoctor/Bio-Medical-Llama-3-8B"
-    max_new_tokens: 512
+    model_id: "BioMistral/BioMistral-7B-DARE-GGUF"
+    max_new_tokens: 2048
   legal:
     model_id: "AdaptLLM/law-LLM"
-    max_new_tokens: 512
+    max_new_tokens: 2048
   general:
     model_id: "Qwen/Qwen2.5-1.5B-Instruct"
-    max_new_tokens: 512
+    max_new_tokens: 2048

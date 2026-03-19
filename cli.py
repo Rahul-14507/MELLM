@@ -8,6 +8,7 @@ import sys
 import argparse
 from rich.console import Console
 from rich.panel import Panel
+from rich.text import Text
 from rich.table import Table
 from rich.progress import Progress, BarColumn, TextColumn
 from rich import print as rprint
@@ -17,25 +18,29 @@ console = Console()
 
 def show_availability(router: LLMRouter):
     """Displays a dashboard of which models are already downloaded."""
+    from loader.airllm_loader import GGUF_REGISTRY
     availability = router.loader.get_local_models()
     
     table = Table(title="Model Availability Dashboard", border_style="cyan")
     table.add_column("Type", style="bold")
     table.add_column("Domain", style="magenta")
-    table.add_column("Model ID", style="white")
+    table.add_column("Model (GGUF)", style="white")
     table.add_column("Status", justify="center")
 
     # Router
     router_id = router.config["router"]["model_id"]
     is_router_local = availability.get(router_id)
+    router_filename = GGUF_REGISTRY.get(router_id, ("", router_id))[1]
     status = "[green]Ready[/green]" if is_router_local else "[yellow]Download Required[/yellow]"
-    table.add_row("Router", "N/A", router_id, status)
+    table.add_row("Router", "N/A", router_filename, status)
     
     # Specialists
     for domain, spec in router.config["specialists"].items():
         m_id = spec["model_id"]
-        status = "[green]Ready[/green]" if availability.get(m_id) else "[yellow]Download Required[/yellow]"
-        table.add_row("Specialist", domain.capitalize(), m_id, status)
+        is_local = availability.get(m_id)
+        filename = GGUF_REGISTRY.get(m_id, ("", m_id))[1]
+        status = "[green]Ready[/green]" if is_local else "[yellow]Download Required[/yellow]"
+        table.add_row("Specialist", domain.capitalize(), filename, status)
         
     console.print(table)
     console.print("[dim italic white]* Download will happen automatically on first query for each domain.[/dim italic white]\n")
@@ -123,21 +128,23 @@ def main():
                 task = progress.add_task("Conf", total=100)
                 progress.update(task, completed=conf_percent)
 
+            from rich.markup import escape
+            
             console.print(Panel(
-                f"[bold white]{result['response']}[/bold white]",
+                Text(result['response'], style="bold white"),
                 title=f"[bold green]Response (Specialist: {domain})[/bold green]",
                 border_style="green"
             ))
             
             console.print(
-                f"[dim white]Router optimized prompt: {result['rewritten_prompt'][:100]}...[/dim white]\n"
+                f"[dim white]Router optimized prompt: {escape(result['rewritten_prompt'][:100])}...[/dim white]\n"
                 f"[dim]Metrics: Router Load: {result['router_load_time']}s | Specialist Load: {result['specialist_load_time']}s | Inference: {result['inference_time_seconds']}s[/dim]"
             )
             
         except KeyboardInterrupt:
             break
         except Exception as e:
-            console.print(f"[bold red]Error durante la ejecución:[/bold red] {e}")
+            console.print(f"[bold red]Error durante la ejecución:[/bold red] {escape(str(e))}")
 
     console.print("\n[bold blue]VRAM cleared. Goodbye![/bold blue]")
 
