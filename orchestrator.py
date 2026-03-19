@@ -52,9 +52,9 @@ class LLMRouter:
         # 1. Router Cycle
         router_model_id = self.config["router"]["model_id"]
         logger.info("Loading router model...")
-        router_model, router_tokenizer, router_load_time = self.loader.get(router_model_id, is_router=True)
+        router_model, _, router_load_time = self.loader.get(router_model_id, is_router=True)
         
-        decision = self.router_logic.classify(router_model, router_tokenizer, user_prompt)
+        decision = self.router_logic.classify(router_model, None, user_prompt)
         
         logger.info("Unloading router model...")
         self.loader.unload(router_model_id)
@@ -71,13 +71,12 @@ class LLMRouter:
         # 3. Specialist Cycle
         specialist_model_id = self.config["specialists"][domain]["model_id"]
         logger.info(f"Loading specialist model for {domain}...")
-        spec_model, spec_tokenizer, spec_load_time = self.loader.get(specialist_model_id)
+        spec_model, _, spec_load_time = self.loader.get(specialist_model_id)
         
         specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
         specialist = specialist_cls(
-            spec_model, 
-            spec_tokenizer, 
-            max_new_tokens=self.config["specialists"].get(domain, {}).get("max_new_tokens", 1024)
+            model=spec_model,
+            max_new_tokens=self.config["specialists"].get(domain, {}).get("max_new_tokens", 512)
         )
         
         inference_start = time.time()

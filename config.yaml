@@ -1,27 +1,20 @@
 router:
   model_id: "Qwen/Qwen2.5-0.5B-Instruct"
   max_new_tokens: 256
-  device: "cuda"
-  always_loaded: true
 
 specialists:
-  medical:
-    model_id: "ContactDoctor/Bio-Medical-Llama-3-8B"
-    max_new_tokens: 512
   code:
-    model_id: "Qwen/Qwen2.5-Coder-7B-Instruct"
+    model_id: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
     max_new_tokens: 512
   math:
-    model_id: "Qwen/Qwen2.5-Math-7B-Instruct"
+    model_id: "Qwen/Qwen2.5-Math-1.5B-Instruct"
+    max_new_tokens: 512
+  medical:
+    model_id: "ContactDoctor/Bio-Medical-Llama-3-8B"
     max_new_tokens: 512
   legal:
     model_id: "AdaptLLM/law-LLM"
     max_new_tokens: 512
   general:
-    model_id: "microsoft/Phi-3.5-mini-instruct"
+    model_id: "Qwen/Qwen2.5-1.5B-Instruct"
     max_new_tokens: 512
-
-airllm:
-  compression: "4bit"           # Use 4-bit quantization to fit in 6GB VRAM
-  prefetch_layers: 8
-  cache_dir: "./model_cache"

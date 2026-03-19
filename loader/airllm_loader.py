@@ -1,123 +1,119 @@
 import time
-import torch
 import logging
-import os
-from airllm import AutoModel
-from transformers import AutoTokenizer
-from huggingface_hub import scan_cache_dir
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+from llama_cpp import Llama
 
 logger = logging.getLogger("LLMRouter.Loader")
 
+# GGUF model registry — maps model_id to (repo_id, filename)
+GGUF_REGISTRY = {
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct": (
+        "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+        "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+    ),
+    "Qwen/Qwen2.5-1.5B-Instruct": (
+        "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    ),
+    "Qwen/Qwen2.5-Math-1.5B-Instruct": (
+        "Qwen/Qwen2.5-Math-1.5B-Instruct-GGUF",
+        "qwen2.5-math-1.5b-instruct-q4_k_m.gguf"
+    ),
+    "ContactDoctor/Bio-Medical-Llama-3-8B": (
+        "bartowski/Bio-Medical-Llama-3-8B-GGUF",
+        "Bio-Medical-Llama-3-8B-Q4_K_M.gguf"
+    ),
+    "AdaptLLM/law-LLM": (
+        "AdaptLLM/law-LLM-GGUF",
+        "law-llm-q4_k_m.gguf"
+    ),
+    "Qwen/Qwen2.5-0.5B-Instruct": (
+        "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    ),
+}
+
+
 class ModelLoader:
-    """
-    Unified loader for both Router and Specialist models.
-    Handles lazy loading, memory management, and local availability checks.
-    """
-    
-    def __init__(self, config: dict):
-        self.config = config
-        self.airllm_settings = config.get("airllm", {})
-        self.cache = {}  # {model_id: (model, tokenizer, load_time)}
-        
-        self.compression = self.airllm_settings.get("compression", "4bit")
-        self.cache_dir = self.airllm_settings.get("cache_dir", "./model_cache")
-        logger.info(f"Initialized ModelLoader with {self.compression} compression")
+    def __init__(self, config: dict = None, compression: str = "4bit"):
+        self.config = config or {}
+        self.cache: dict = {}
+        self.cache_dir = Path.home() / ".cache" / "mellm_gguf"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Initialized ModelLoader with llama-cpp-python (GPU inference)")
 
     def get_local_models(self) -> dict:
-        """
-        Checks which models from the config are already available in the HF cache.
-        Returns a dict: {model_id: bool (is_local)}
-        """
-        local_ids = set()
-        try:
-            cache_info = scan_cache_dir()
-            for repo in cache_info.repos:
-                local_ids.add(repo.repo_id)
-        except Exception as e:
-            if "Cache directory not found" not in str(e):
-                logger.warning(f"Could not scan HF cache: {e}")
+        """Returns a dict of model_id -> availability (bool)."""
+        all_models = [self.config.get("router", {}).get("model_id", "")]
+        for spec in self.config.get("specialists", {}).values():
+            all_models.append(spec.get("model_id", ""))
 
-        all_models = [self.config["router"]["model_id"]]
-        for spec in self.config["specialists"].values():
-            all_models.append(spec["model_id"])
-            
-        return {m_id: (m_id in local_ids) for m_id in all_models}
+        result = {}
+        for m_id in all_models:
+            if not m_id:
+                continue
+            if m_id in GGUF_REGISTRY:
+                _, filename = GGUF_REGISTRY[m_id]
+                result[m_id] = (self.cache_dir / filename).exists()
+            else:
+                result[m_id] = False
+        return result
+
+    def _get_gguf_path(self, model_id: str) -> Path:
+        if model_id not in GGUF_REGISTRY:
+            raise ValueError(f"No GGUF mapping found for model: {model_id}")
+
+        repo_id, filename = GGUF_REGISTRY[model_id]
+        local_path = self.cache_dir / filename
+
+        if local_path.exists():
+            logger.info(f"Found cached GGUF: {local_path}")
+            return local_path
+
+        logger.info(f"Downloading GGUF: {repo_id}/{filename}")
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=str(self.cache_dir)
+        )
+        return Path(downloaded)
 
     def get(self, model_id: str, is_router: bool = False):
         """
-        Retrieves a loaded model and tokenizer.
-        - Router (tiny): Uses standard transformers (fast, no weight-slicing needed).
-        - Specialists (large): Uses AirLLM (memory efficient via weight-slicing).
+        Loads and returns a Llama model instance.
+        is_router is kept for API compatibility but is unused — all models
+        use the same llama-cpp-python backend.
+        Returns (model, None, load_time) to maintain compatibility with orchestrator.
         """
         if model_id in self.cache:
             logger.info(f"Returning cached model: {model_id}")
-            return self.cache[model_id]
-            
-        logger.info(f"Loading model: {model_id}")
-        start_time = time.time()
-        
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
-            
-            if is_router:
-                logger.debug(f"[{model_id}] Router loading path detected. Using AutoModelForCausalLM.")
-                from transformers import AutoModelForCausalLM
-                # Use bfloat16 for stability on 3050 series if supported, or float16
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_id,
-                    torch_dtype=torch.float16,
-                    device_map="cuda", # Force direct CUDA to avoid map overhead
-                )
-                logger.debug(f"[{model_id}] Router model loaded on CUDA.")
-            else:
-                logger.debug(f"[{model_id}] Specialist loading path detected. Using AirLLM.")
-                model = AutoModel.from_pretrained(
-                    model_id,
-                    compression=self.compression,
-                    hf_token=None
-                )
-                logger.debug(f"[{model_id}] AirLLM model initialized.")
-            
-            # --- CRITICAL PATCHES FOR TRANSFORMERS COMPATIBILITY ---
-            model_class = type(model)
-            if not hasattr(model_class, '_is_stateful'):
-                model_class._is_stateful = False
+            model, load_time = self.cache[model_id]
+            return model, None, load_time
 
-            # Force legacy cache off globally to prevent looping
-            try:
-                if hasattr(model, 'config'):
-                    model.config.use_cache = False  # Disable cache for inference
-                    model.config.cache_implementation = None
-                
-                if hasattr(model, 'generation_config'):
-                    model.generation_config.use_cache = False
-                    model.generation_config.cache_implementation = None
-                    if not is_router:
-                        model.generation_config.do_sample = False
-            except Exception as e:
-                logger.debug(f"[{model_id}] Non-critical: Failed to apply cache patch: {e}")
-            
-            load_time = time.time() - start_time
-            logger.info(f"Loaded {model_id} in {load_time:.2f}s")
-            
-            self.cache[model_id] = (model, tokenizer, load_time)
-            return self.cache[model_id]
-            
-        except Exception as e:
-            logger.error(f"Failed to load model {model_id}: {e}")
-            raise
+        logger.info(f"Loading model: {model_id}")
+        start = time.time()
+
+        gguf_path = self._get_gguf_path(model_id)
+
+        model = Llama(
+            model_path=str(gguf_path),
+            n_gpu_layers=-1,   # offload all layers to GPU
+            n_ctx=4096,        # context window
+            n_batch=512,
+            verbose=False
+        )
+
+        load_time = time.time() - start
+        logger.info(f"Loaded {model_id} in {load_time:.2f}s")
+
+        self.cache[model_id] = (model, load_time)
+        return model, None, load_time
 
     def unload(self, model_id: str):
-        """
-        Unloads a model from cache and clears GPU memory.
-        """
         if model_id in self.cache:
             logger.info(f"Unloading model: {model_id}")
-            model, tokenizer, _ = self.cache.pop(model_id)
-            
-            del model
-            del tokenizer
-            torch.cuda.empty_cache()
+            del self.cache[model_id]
             import gc
             gc.collect()
             logger.info(f"Cleared VRAM after unloading {model_id}")

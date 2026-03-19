@@ -1,18 +1,18 @@
 import json
-import torch
 import logging
 from .prompt_optimizer import PromptOptimizer
 
 logger = logging.getLogger("LLMRouter.Classifier")
 
+
 class RouterClassifier:
     """
-    RouterClassifier now accepts model and tokenizer as arguments,
-    making it compatible with on-demand loading.
+    Routes queries to the correct specialist domain using a Llama model.
+    llama-cpp-python handles chat templating internally — no tokenizer needed.
     """
-    
+
     VALID_DOMAINS = ["medical", "code", "math", "legal", "general"]
-    
+
     def __init__(self):
         self.optimizer = PromptOptimizer()
         self.system_prompt = (
@@ -28,53 +28,36 @@ class RouterClassifier:
             "}"
         )
 
-    def classify(self, model, tokenizer, user_prompt: str, device: str = "cuda") -> dict:
+    def classify(self, model, tokenizer=None, user_prompt: str = "", device: str = "cuda") -> dict:
         """
-        Classifies the user prompt using the provided model and tokenizer.
+        Classifies the user prompt using the provided Llama model.
+        tokenizer and device are kept for backward compatibility but are unused.
         """
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        model_inputs = tokenizer([text], return_tensors="pt").to(device)
-
-        from transformers import GenerationConfig
-        gen_config = GenerationConfig(
-            max_new_tokens=256
-        )
-
-        generated_ids = model.generate(
-            **model_inputs,
-            generation_config=gen_config,
-            use_cache=False
-        )
-        
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-        ]
-
-        response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
         try:
+            response_obj = model.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=256,
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            response = response_obj["choices"][0]["message"]["content"]
+
             clean_response = response.strip()
             if clean_response.startswith("```json"):
                 clean_response = clean_response[7:]
             if clean_response.endswith("```"):
                 clean_response = clean_response[:-3]
-            
+
             decision = json.loads(clean_response.strip())
-            
+
             if decision.get("domain") not in self.VALID_DOMAINS or decision.get("confidence", 0) < 0.6:
                 return self._fallback(user_prompt)
-                
+
             return decision
-            
+
         except Exception as e:
             logger.error(f"Router interpretation failed: {e}")
             return self._fallback(user_prompt)
