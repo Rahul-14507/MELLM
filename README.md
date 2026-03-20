@@ -25,9 +25,12 @@ This means you get **expert-level responses** in medicine, law, math, and coding
 
 - 🔀 **Intelligent Routing** — A 0.5B parameter router classifies queries into 5 domains with >90% accuracy
 - 🧬 **Domain Specialists** — Dedicated models fine-tuned for medical, legal, math, code, and general knowledge
-- 💾 **VRAM-Optimized** — Models load/unload on-demand; only one model in GPU memory at a time
+- ⚡ **Persistent Router** — Router stays resident in VRAM all session; zero load overhead after startup
+- 🔥 **Hot Specialist Cache** — Active specialist stays loaded between queries; only swapped on domain change
+- 🧠 **Conversation Context** — Keeps the last 3 turns of history so follow-up queries like "Now in Python?" work correctly
+- 🎯 **Domain Continuity Bias** — Short follow-up queries automatically inherit the current domain without re-routing
 - 📦 **GGUF Format** — Quantized models for fast inference with minimal memory footprint
-- 🖥️ **Rich CLI** — Beautiful terminal interface with progress bars, confidence meters, and dashboards
+- 🖥️ **Rich CLI** — Terminal interface with confidence meters, live efficiency panels, and session stats
 - 🌐 **REST API** — FastAPI server for programmatic access
 - ⬇️ **Auto-Download** — Models download automatically from Hugging Face on first use
 
@@ -36,23 +39,41 @@ This means you get **expert-level responses** in medicine, law, math, and coding
 ## 🏗️ Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌───────────────────┐     ┌──────────────┐
-│  User Query │────▶│  Load Router │────▶│  Classify Domain  │────▶│ Unload Router│
-└─────────────┘     │  (0.5B Qwen) │     │  + Rewrite Prompt │     └──────┬───────┘
-                    └──────────────┘     └───────────────────┘            │
-                                                                          ▼
-┌─────────────┐     ┌──────────────┐     ┌───────────────────┐     ┌──────────────────┐
-│   Response  │◀────│   Unload     │◀────│     Generate      │◀────│ Load Specialist   │
-│             │     │  Specialist  │     │    Response        │     │ (1.5B-7B model)   │
-└─────────────┘     └──────────────┘     └───────────────────┘     └──────────────────┘
+                      ┌──────────────────────────────────────┐
+                      │   STARTUP — once per session         │
+                      │   Router (0.5B Qwen) loads into VRAM │
+                      └──────────────────┬───────────────────┘
+                                         │ stays resident ↓
+┌──────────────┐    ┌─────────────┐    ┌─────────────────────┐
+│  User Query  │───▶│  Add context│───▶│  Router: Classify   │
+│              │    │  (last 3    │    │  domain + rewrite   │
+│              │    │   turns)    │    │  prompt (JSON mode) │
+└──────────────┘    └─────────────┘    └──────────┬──────────┘
+                                                   │
+                               domain continuity   │
+                               bias applied here   │
+                                                   ▼
+              ┌────────────────────────────────────────────────┐
+              │  Hot Cache Check                               │
+              │  Same domain? → reuse loaded specialist (0s)   │
+              │  New domain?  → unload old, load new (1-6s)    │
+              └───────────────────┬────────────────────────────┘
+                                   │
+          ┌────────────────────────▼──────────────────────────┐
+          │  Specialist generates response (stays in VRAM)    │
+          │  History appended → available for next query      │
+          └───────────────────────────────────────────────────┘
 ```
 
-### Why Load/Unload?
+### VRAM Strategy
 
-On a 6GB GPU, you can't keep multiple models resident. MELLM's on-demand loading strategy ensures:
-- Only **one model occupies VRAM** at any time
-- Garbage collection reclaims GPU memory between stages
-- Even 7B models fit comfortably with reduced context windows
+MELLM uses a **two-tier residency** model to maximize responsiveness within 6GB VRAM:
+
+| Model | Residency | Why |
+|-------|-----------|-----|
+| **Router** (0.5B) | Always in VRAM | ~470MB, permanent resident; no per-query overhead |
+| **Active Specialist** | In VRAM until domain changes | Only one specialist at a time; swapped on domain switch |
+| **Other Specialists** | On disk (GGUF cache) | Loaded on-demand in 1-6s |
 
 ---
 
@@ -77,9 +98,9 @@ All models use the **GGUF** quantized format for efficient inference via `llama-
 
 ```
 MELLM/
-├── cli.py                    # Rich terminal interface
+├── cli.py                    # Rich terminal interface with session efficiency UI
 ├── api.py                    # FastAPI REST server
-├── orchestrator.py           # Main pipeline (load → classify → generate → unload)
+├── orchestrator.py           # Core pipeline: persistent router, hot cache, conversation history
 ├── config.yaml               # Model IDs, token limits, and specialist configuration
 ├── requirements.txt          # Python dependencies
 ├── .env                      # Environment variables (HF_TOKEN)
@@ -196,19 +217,40 @@ python api.py
 python cli.py
 ```
 
-On startup, MELLM displays a **Model Availability Dashboard** showing which models are cached and ready. Then enter your queries:
+On startup, MELLM loads the router model and displays a **Model Availability Dashboard** showing which specialists are cached. The router shows **`Loaded (persistent)`** — it's already in VRAM before your first query.
 
 ```
-Query: Implement a Red-Black Tree in Python with insert and search operations
+Query: Binary Search in Java
 
 Domain: CODE
 ╭─── Response (Specialist: code) ───╮
-│ Here is a Python implementation... │
+│ Here is a Java implementation...  │
 ╰───────────────────────────────────╯
-Metrics: Router Load: 1.02s | Specialist Load: 1.63s | Inference: 8.42s
+Metrics: Router: resident (0s) | Specialist Load: 1.63s | Inference: 8.42s | Context: 1 turns
+╭──────────────── ⚡ Efficiency ────────────────╮
+│ Queries this session : 1                       │
+│ Specialist cache hits: 0/1 (0%)               │
+│ Router loads saved   : 0 (~0.0s saved)        │
+│ Active specialist    : CODE (freshly loaded)  │
+│ Context turns active : 1/3                    │
+╰───────────────────────────────────────────────╯
+
+Query: Now in Python?
+  → Domain continuity: short follow-up, keeping 'code'
+  → Cache hit — reusing code specialist (0s)
+╭─── Response (Specialist: code) ───╮
+│ Here is the Python equivalent...  │
+╰───────────────────────────────────╯
+Metrics: Router: resident (0s) | Specialist Load: 0s | Inference: 7.1s | Context: 2 turns
 ```
 
-Models are downloaded automatically on first use with a progress bar.
+**CLI Commands:**
+
+| Command | Effect |
+|---------|--------|
+| *(any query)* | Routes through MoE pipeline |
+| `clear` | Wipes conversation history, starts fresh |
+| `exit` / `quit` | Cleanly unloads all models from VRAM and exits |
 
 ### API Mode
 
@@ -239,9 +281,11 @@ curl -X POST http://localhost:8000/query \
   "confidence": 0.95,
   "rewritten_prompt": "...",
   "response": "The common symptoms of appendicitis include...",
-  "router_load_time": 1.02,
+  "router_load_time": 0.0,
   "specialist_load_time": 10.81,
-  "inference_time_seconds": 5.23
+  "inference_time_seconds": 5.23,
+  "cache_hit": false,
+  "context_turns": 1
 }
 ```
 
@@ -265,17 +309,18 @@ Benchmarked on **NVIDIA RTX 3050 (6GB VRAM)** with CUDA 12.1:
 
 | Stage | 1.5B Models | 3B Models | 7B Models (Q2_K) |
 |-------|-------------|-----------|-------------------|
-| Model Load | ~1-2s | ~3-4s | ~5-6s |
+| Model Load (first time) | ~1-2s | ~3-4s | ~5-6s |
+| Model Load (cache hit) | **0s** | **0s** | **0s** |
 | Inference Speed | 15-25 tok/s | 10-15 tok/s | 8-12 tok/s |
 | VRAM Usage | ~1.5 GB | ~2.5 GB | ~3-4 GB |
 | Context Window | 4096 tokens | 1024 tokens | 1024 tokens |
 
-| End-to-End | Time |
-|------------|------|
-| Router classification | ~1-2s |
-| Specialist response (1.5B) | ~5-15s |
-| Specialist response (7B) | ~15-30s |
-| **Total typical query** | **~10-35s** |
+| End-to-End | 1st Query | 2nd Query (Same Domain) | 2nd Query (Domain Switch) |
+|------------|-----------|-------------------------|---------------------------|
+| Router overhead | 0s (persistent) | 0s (persistent) | 0s (persistent) |
+| Specialist load | 1-6s | **0s (hot cache)** | 1-6s (new domain) |
+| Inference (1.5B) | ~5-15s | ~5-15s | ~5-15s |
+| **Total typical query** | **~6-20s** | **~5-15s** | **~6-20s** |
 
 ---
 
@@ -376,7 +421,6 @@ git checkout -b feature/your-feature-name
 - 🧪 **Evaluation benchmarks** — Build test suites to measure routing accuracy and specialist quality
 - 🖥️ **Web UI** — Build a Gradio or Streamlit frontend
 - 📊 **Metrics dashboard** — Track routing accuracy, latency, and VRAM usage over time
-- 🔄 **Multi-turn conversations** — Add conversation history and context management
 - 🏎️ **Performance optimization** — Explore batch inference, speculative decoding, or model caching strategies
 - 📝 **Better prompts** — Improve specialist system prompts for higher-quality responses
 - 🐛 **Bug fixes** — Check the Issues tab for known bugs
@@ -400,21 +444,24 @@ git checkout -b feature/your-feature-name
 
 ## 🐛 Known Limitations
 
-- **Per-query latency**: Each query requires a full load/unload cycle (~2-6s overhead), since models can't stay resident in 6GB VRAM
+- **First-query latency**: The first query for a new domain takes 1-6s to load the specialist; subsequent same-domain queries are instant (hot cache)
 - **Context window**: 7B models are limited to 1024 tokens of context to fit in VRAM
 - **Single query at a time**: The system processes one query before accepting the next
-- **No conversation memory**: Each query is independent; there's no multi-turn context
-- **Router accuracy**: The 0.5B router occasionally misclassifies edge cases between domains
+- **Context continuity for the API**: The conversation history is session-bound to the `LLMRouter` instance; the REST API resets on each server restart
+- **Domain continuity limitations**: Very ambiguous short queries (e.g., "More?") are biased toward the previous domain, which may not always be correct
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] Multi-turn conversation support
+- [x] Persistent router model (no per-query load overhead)
+- [x] Hot specialist cache (domain-switch-only unloading)
+- [x] Conversation context memory (last 3 turns)
+- [x] Domain continuity bias for follow-up queries
+- [x] Live session efficiency panel in CLI
 - [ ] Web UI (Gradio/Streamlit)
-- [ ] Evaluation benchmark suite
+- [ ] Evaluation benchmark suite for routing accuracy
 - [ ] Streaming token output
-- [ ] Model caching strategies for higher-VRAM GPUs
 - [ ] Docker container for easy deployment
 - [ ] Support for AMD GPUs (ROCm)
 
