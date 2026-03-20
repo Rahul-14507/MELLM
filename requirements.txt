@@ -5,4 +5,6 @@ rich>=13.0.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 python-dotenv>=1.0.0
+torch
+psutil
 setuptools

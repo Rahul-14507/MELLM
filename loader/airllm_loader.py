@@ -1,5 +1,6 @@
 import time
 import logging
+import torch
 from pathlib import Path
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
@@ -38,6 +39,10 @@ GGUF_REGISTRY = {
 class ModelLoader:
     def __init__(self, config: dict = None, compression: str = "4bit"):
         self.config = config or {}
+        # Merge config registry with default registry
+        config_registry = self.config.get("gguf_registry", {})
+        self.registry = {**GGUF_REGISTRY, **config_registry}
+        
         self.cache: dict = {} # Restored for preloading/unload compatibility
         self.cache_dir = Path.home() / ".cache" / "mellm_gguf"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -53,18 +58,18 @@ class ModelLoader:
         for m_id in all_models:
             if not m_id:
                 continue
-            if m_id in GGUF_REGISTRY:
-                _, filename = GGUF_REGISTRY[m_id]
+            if m_id in self.registry:
+                _, filename = self.registry[m_id]
                 result[m_id] = (self.cache_dir / filename).exists()
             else:
                 result[m_id] = False
         return result
 
     def _get_gguf_path(self, model_id: str) -> Path:
-        if model_id not in GGUF_REGISTRY:
+        if model_id not in self.registry:
             raise ValueError(f"No GGUF mapping found for model: {model_id}")
 
-        repo_id, filename = GGUF_REGISTRY[model_id]
+        repo_id, filename = self.registry[model_id]
         local_path = self.cache_dir / filename
 
         if local_path.exists():
@@ -94,18 +99,29 @@ class ModelLoader:
 
         gguf_path = self._get_gguf_path(model_id)
 
-        # In ModelLoader.get(), set n_ctx based on model size
-        # We also treat the legal model as 'large' because law-chat is ~7B
-        is_large = any(x in model_id.lower() for x in ["7b", "8b", "law"])
-        n_ctx = 1024 if is_large else 4096
+        # In ModelLoader.get(), set n_ctx based on model file size
+        # Large models (> 2GB) need a smaller context window to fit in VRAM
+        import os
+        file_size_gb = os.path.getsize(gguf_path) / 1e9
+        n_ctx = 1024 if file_size_gb > 2.0 else 4096
         
-        model = Llama(
-            model_path=str(gguf_path),
-            n_gpu_layers=-1,   # offload all layers to GPU
-            n_ctx=n_ctx,
-            n_batch=512,
-            verbose=False
-        )
+        try:
+            # For specialists (non-router), disable mmap to prevent fragmentation
+            # on memory-swapping workflows. Persistent router still uses mmap.
+            model = Llama(
+                model_path=str(gguf_path),
+                n_gpu_layers=-1,   # offload all layers to GPU
+                n_ctx=n_ctx,
+                n_batch=512,
+                use_mmap=(is_router),  # Only mmap the persistent router
+                verbose=False
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize Llama model from {gguf_path}: {e}")
+            raise RuntimeError(
+                f"Model initialization failed. This often happens if the GGUF file is corrupted "
+                f"or VRAM is insufficient. Try deleting the file at {gguf_path} and restarting."
+            )
         
         load_time = time.time() - start
         logger.info(f"Loaded {model_id} in {load_time:.2f}s")
@@ -117,7 +133,20 @@ class ModelLoader:
     def unload(self, model_id: str):
         if model_id in self.cache:
             logger.info(f"Unloading model: {model_id}")
-            del self.cache[model_id]
+            # Use pop to ensure it's removed from cache immediately
+            model, _ = self.cache.pop(model_id)
+            del model
+            
             import gc
             gc.collect()
+            
+            # Aggressive VRAM release
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # wait for all CUDA ops to complete
+                time.sleep(0.2)  # minimal safety buffer
+                
+            # Extra GC pass to be triple-sure
+            gc.collect()
+            
             logger.info(f"Cleared VRAM after unloading {model_id}")

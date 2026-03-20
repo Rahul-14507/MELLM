@@ -10,6 +10,8 @@ from rich.table import Table
 from rich.markup import escape
 from rich.progress import Progress, BarColumn, TextColumn
 from rich import print as rprint
+from pathlib import Path
+from setup.onboarding import run_onboarding, show_banner, VERSION
 from orchestrator import LLMRouter
 
 console = Console()
@@ -44,20 +46,30 @@ def show_availability(router: LLMRouter):
     console.print("[dim italic white]* Download will happen automatically on first query for each domain.[/dim italic white]\n")
 
 def main():
+    # Show big ASCII banner first — always
+    show_banner()
+    
+    # Check for --reconfigure flag
+    if "--reconfigure" in sys.argv:
+        run_onboarding(skip_banner=True)
+        return
+    
+    # First run check — if no user_config.yaml, run onboarding
+    if not Path("user_config.yaml").exists():
+        console.print("[yellow]No user configuration found. Starting setup wizard...[/yellow]\n")
+        run_onboarding(skip_banner=True)
+    
+    # Load config — prefer user_config.yaml over config.yaml
+    config_path = "user_config.yaml" if Path("user_config.yaml").exists() else "config.yaml"
+    
     parser = argparse.ArgumentParser(description="MELLM - LLM Router CLI")
     parser.add_argument("--preload", type=str, help="Preload a specific domain model or 'all'")
     args = parser.parse_args()
 
-    console.print(Panel.fit(
-        "[bold cyan]MELLM - LLM Router[/bold cyan]\n"
-        "[italic white]Consumer-Hardware MoE Orchestration System[/italic white]",
-        border_style="bright_blue"
-    ))
-    
     try:
         # Initialize router — router model loads here and stays resident
         with console.status("[cyan]Loading router model (persistent)...[/cyan]"):
-            router = LLMRouter()
+            router = LLMRouter(config_path=config_path)
             
         if args.preload:
             specialists = router.config["specialists"]
@@ -89,7 +101,6 @@ def main():
     except Exception as e:
         console.print(f"[bold red]Initialization Error:[/bold red] {escape(str(e))}")
         sys.exit(1)
-        
     console.print("[green]System initialized. Router is persistent. Type 'exit' or 'quit' to stop.[/green]")
     
     # Session stats tracked in CLI
@@ -104,7 +115,6 @@ def main():
                 user_input = console.input("\n[bold yellow]Query:[/bold yellow] ")
                 
                 if user_input.lower() in ["exit", "quit"]:
-                    router.shutdown()
                     break
                     
                 if user_input.lower() == "clear":
@@ -191,7 +201,7 @@ def main():
                     f"  Active specialist    : [cyan]{domain.upper()}[/cyan] {hot_label}\n"
                     f"  Context turns active : [cyan]{len(router.conversation_history)}/{router.max_history}[/cyan]\n"
                     f"  Domain streak        : [cyan]{streak_display}[/cyan]",
-                    title="⚡ Efficiency",
+                    title=f"⚡ Efficiency ({VERSION})",
                     border_style="dim"
                 ))
                 
@@ -201,7 +211,8 @@ def main():
             except Exception as e:
                 console.print(f"[bold red]Error:[/bold red] {escape(str(e))}")
     finally:
-        router.shutdown()
+        if 'router' in locals():
+            router.shutdown()
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 router:
-  model_id: "Qwen/Qwen2.5-0.5B-Instruct"
+  model_id: "Qwen/Qwen2.5-1.5B-Instruct"
   max_new_tokens: 256
 
 specialists:

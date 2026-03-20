@@ -10,6 +10,9 @@
     <img src="https://img.shields.io/badge/format-GGUF-orange" alt="GGUF"/>
     <img src="https://img.shields.io/badge/GPU-NVIDIA_CUDA-76B900" alt="CUDA"/>
     <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT License"/>
+    <img src="https://img.shields.io/github/stars/Rahul-14507/MELLM" alt="GitHub Stars"/>
+    <img src="https://img.shields.io/github/issues/Rahul-14507/MELLM" alt="GitHub Issues"/>
+    <img src="https://img.shields.io/github/last-commit/Rahul-14507/MELLM" alt="Last Commit"/>
   </p>
 </p>
 
@@ -21,9 +24,14 @@ MELLM is a lightweight **Mixture-of-Experts (MoE)** system designed to run entir
 
 This means you get **expert-level responses** in medicine, law, math, and coding — all on hardware you already own.
 
+### ⚡ Why MELLM?
+
+Running a 7B model with naive layer-streaming takes **56 minutes per query** on 6GB VRAM. MELLM routes the same query to a 3–7B specialist and answers it in **8 seconds** using MoE — while giving you *better* domain-specific results because the model was actually fine-tuned for that task.
+
 ### Key Features
 
-- 🔀 **Intelligent Routing** — A 0.5B parameter router classifies queries into 5 domains with >90% accuracy
+- 🔀 **Intelligent Routing** — A 1.5B parameter router classifies queries into 5 domains with >90% accuracy
+- 🧩 **Multi-Agent Composition** — Cross-domain queries are automatically decomposed, routed to multiple specialists in sequence, and merged into a single coherent response
 - 🧬 **Domain Specialists** — Dedicated models fine-tuned for medical, legal, math, code, and general knowledge
 - ⚡ **Persistent Router** — Router stays resident in VRAM all session; zero load overhead after startup
 - 🔥 **Hot Specialist Cache** — Active specialist stays loaded between queries; only swapped on domain change
@@ -41,7 +49,7 @@ This means you get **expert-level responses** in medicine, law, math, and coding
 ```
                       ┌──────────────────────────────────────┐
                       │   STARTUP — once per session         │
-                      │   Router (0.5B Qwen) loads into VRAM │
+                      │   Router (1.5B Qwen) loads into VRAM │
                       └──────────────────┬───────────────────┘
                                          │ stays resident ↓
 ┌──────────────┐    ┌─────────────┐    ┌─────────────────────┐
@@ -71,7 +79,7 @@ MELLM uses a **two-tier residency** model to maximize responsiveness within 6GB 
 
 | Model | Residency | Why |
 |-------|-----------|-----|
-| **Router** (0.5B) | Always in VRAM | ~470MB, permanent resident; no per-query overhead |
+| **Router** (1.5B) | Always in VRAM | ~1 GB, permanent resident; no per-query overhead |
 | **Active Specialist** | In VRAM until domain changes | Only one specialist at a time; swapped on domain switch |
 | **Other Specialists** | On disk (GGUF cache) | Loaded on-demand in 1-6s |
 
@@ -83,7 +91,7 @@ All models use the **GGUF** quantized format for efficient inference via `llama-
 
 | Role | Domain | Model | GGUF File | Size | Context |
 |------|--------|-------|-----------|------|---------|
-| **Router** | All | Qwen2.5-0.5B-Instruct | `qwen2.5-0.5b-instruct-q4_k_m.gguf` | ~470 MB | 4096 |
+| **Router** | All | Qwen2.5-**1.5B**-Instruct | `qwen2.5-1.5b-instruct-q4_k_m.gguf` | ~1 GB | 4096 |
 | Specialist | **Code** | Qwen2.5-Coder-1.5B-Instruct | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | ~1.1 GB | 4096 |
 | Specialist | **Math** | Qwen2.5-Math-1.5B-Instruct | `Qwen2.5-Math-1.5B-Instruct-Q4_K_M.gguf` | ~986 MB | 4096 |
 | Specialist | **Medical** | BioMistral-7B-DARE | `ggml-model-Q2_K.gguf` | ~2.3 GB | 1024 |
@@ -252,6 +260,21 @@ Metrics: Router: resident (0s) | Specialist Load: 0s | Inference: 7.1s | Context
 | `clear` | Wipes conversation history, starts fresh |
 | `exit` / `quit` | Cleanly unloads all models from VRAM and exits |
 
+### Multi-Agent Queries
+
+MELLM automatically detects when a query spans multiple domains and routes sub-tasks to the appropriate specialists, then merges the results into a single coherent response:
+
+```
+Query: "Explain binary search AND give Java code AND analyse its complexity"
+
+→ GENERAL specialist: conceptual explanation
+→ CODE specialist:    Java implementation
+→ MATH specialist:    O(log n) complexity analysis
+→ Merged into a single response
+```
+
+This happens transparently — just ask your cross-domain question and MELLM handles the rest.
+
 ### API Mode
 
 ```bash
@@ -330,7 +353,7 @@ All model and generation settings are in `config.yaml`:
 
 ```yaml
 router:
-  model_id: "Qwen/Qwen2.5-0.5B-Instruct"
+  model_id: "Qwen/Qwen2.5-1.5B-Instruct"
   max_new_tokens: 256
 
 specialists:
@@ -459,6 +482,10 @@ git checkout -b feature/your-feature-name
 - [x] Conversation context memory (last 3 turns)
 - [x] Domain continuity bias for follow-up queries
 - [x] Live session efficiency panel in CLI
+- [x] Multi-agent composition (cross-domain queries)
+- [x] Domain-aware session history (streak display)
+- [x] Interactive setup wizard with hardware detection
+- [x] FastAPI REST endpoint
 - [ ] Web UI (Gradio/Streamlit)
 - [ ] Evaluation benchmark suite for routing accuracy
 - [ ] Streaming token output

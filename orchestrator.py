@@ -30,7 +30,7 @@ class LLMRouter:
     - Specialist model is kept hot between queries; only swapped on domain change.
     - Conversation history (last 3 turns) is prepended to each new query for context.
     - Multi-domain queries are decomposed, routed in parallel, and merged.
-    - Domain streak tracking prevents thrashing during domain alternation.
+    - Domain continuity bias helps with short follow-ups.
     """
 
     SPECIALIST_MAP = {
@@ -64,10 +64,8 @@ class LLMRouter:
         self.conversation_history = []  # list of {"prompt", "domain", "response"}
         self.max_history = 3
 
-        # Domain streak tracking — prevents thrashing when alternating domains
+        # Domain streak tracking — display ONLY (not used for routing)
         self.domain_streak = []         # rolling window of recent domains
-        self.streak_window = 5          # how many recent queries to consider
-        self.streak_threshold = 2       # min appearances to keep specialist hot
 
         # Session statistics
         self.session_stats = {
@@ -144,26 +142,6 @@ class LLMRouter:
 
         return domain
 
-    # ─── Streak-Aware Cache ────────────────────────────────────────────────────
-
-    def _should_keep_current_specialist(self, new_domain: str) -> bool:
-        """
-        Returns True if the current specialist should stay loaded despite a domain
-        mismatch, based on recent domain streak patterns. Prevents thrashing when
-        users alternate between two domains repeatedly.
-        """
-        if self.last_domain is None:
-            return False
-        if new_domain == self.last_domain:
-            return True  # Same domain, always keep
-
-        # Count how many times current domain appeared in recent streak
-        recent = self.domain_streak[-self.streak_window:]
-        current_count = recent.count(self.last_domain)
-
-        # If current specialist dominated recent session, keep it
-        return current_count >= self.streak_threshold
-
     # ─── Multi-Agent Composition ───────────────────────────────────────────────
 
     def _run_multi_agent(self, user_prompt: str) -> dict:
@@ -181,48 +159,63 @@ class LLMRouter:
         domains_used = []
 
         for task in sub_tasks:
-            domain = task["domain"]
-            sub_prompt = task["sub_prompt"]
-            domains_used.append(domain)
+            try:
+                domain = task["domain"]
+                sub_prompt = task["sub_prompt"]
+                domains_used.append(domain)
 
-            specialist_config = self.config["specialists"][domain]
-            specialist_model_id = specialist_config["model_id"]
+                specialist_config = self.config["specialists"][domain]
+                specialist_model_id = specialist_config["model_id"]
 
-            # Hot cache check per sub-task
-            if self.last_domain == domain and self.last_model is not None:
-                logger.info(f"[Composer] Cache hit for {domain} specialist")
-                model = self.last_model
-            else:
-                if self.last_domain is not None and self.last_model is not None:
-                    prev_model_id = self.config["specialists"][self.last_domain]["model_id"]
-                    logger.info(f"[Composer] Switching from {self.last_domain} to {domain}...")
-                    self.loader.unload(prev_model_id)
+                # Hot cache check per sub-task
+                if self.last_domain == domain and self.last_model is not None:
+                    logger.info(f"[Composer] Cache hit for {domain} specialist")
+                    model = self.last_model
+                else:
+                    if self.last_domain is not None and self.last_model is not None:
+                        prev_model_id = self.config["specialists"][self.last_domain]["model_id"]
+                        logger.info(f"[Composer] Switching from {self.last_domain} to {domain}...")
+                        
+                        # CRITICAL: Clear reference before unloading to allow GC
+                        self.last_model = None
+                        import gc
+                        gc.collect()
+                        
+                        self.loader.unload(prev_model_id)
 
-                logger.info(f"[Composer] Loading {domain} specialist...")
-                start_load = time.time()
-                model, _, _ = self.loader.get(specialist_model_id)
-                total_load_time += time.time() - start_load
+                    logger.info(f"[Composer] Loading {domain} specialist...")
+                    start_load = time.time()
+                    model, _, _ = self.loader.get(specialist_model_id)
+                    total_load_time += time.time() - start_load
 
-                self.last_domain = domain
-                self.last_model = model
+                    self.last_domain = domain
+                    self.last_model = model
 
-            # Run inference for this sub-task
-            specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
-            specialist = specialist_cls(
-                model=model,
-                max_new_tokens=specialist_config.get("max_new_tokens", 512)
-            )
+                # Run inference for this sub-task
+                specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
+                specialist = specialist_cls(
+                    model=model,
+                    max_new_tokens=specialist_config.get("max_new_tokens", 512)
+                )
 
-            inf_start = time.time()
-            response = specialist.generate(sub_prompt)
-            total_inference_time += time.time() - inf_start
+                inf_start = time.time()
+                response = specialist.generate(sub_prompt)
+                total_inference_time += time.time() - inf_start
 
-            sub_results.append({
-                "domain": domain,
-                "sub_prompt": sub_prompt,
-                "response": response
-            })
-            logger.info(f"[Composer] {domain} specialist done.")
+                sub_results.append({
+                    "domain": domain,
+                    "sub_prompt": sub_prompt,
+                    "response": response
+                })
+                logger.info(f"[Composer] {domain} specialist done.")
+
+            except Exception as e:
+                logger.error(f"[Composer] Failed to process {domain} specialist: {e}")
+                sub_results.append({
+                    "domain": domain,
+                    "sub_prompt": sub_prompt,
+                    "response": f"ERROR: Specialist {domain} failed to load or generate. {e}"
+                })
 
         # Merge all responses into one coherent output
         merged = merge_responses(sub_results)
@@ -287,90 +280,90 @@ class LLMRouter:
             domain = "general"
             rewritten_prompt = self.optimizer.optimize(domain, user_prompt)
 
-        # 4. Update domain streak
+        # 4. Update domain streak (display-only)
         self.domain_streak.append(domain)
-        if len(self.domain_streak) > self.streak_window * 2:
-            self.domain_streak = self.domain_streak[-self.streak_window:]
 
         # 5. Build specialist prompt with focused context (last 2 turns)
         specialist_prompt = self._build_specialist_prompt(rewritten_prompt)
 
-        # 6. Streak-aware specialist cache
+        # 6. Specialist model loading/caching
         specialist_config = self.config["specialists"][domain]
         specialist_model_id = specialist_config["model_id"]
 
         cache_hit = False
         spec_load_time = 0.0
 
-        if self.last_domain == domain and self.last_model is not None:
-            # Exact cache hit — same domain
-            logger.info(f"Cache hit — reusing {domain} specialist (no reload needed)")
-            model = self.last_model
-            cache_hit = True
-            self.session_stats["cache_hits"] += 1
+        try:
+            if self.last_domain == domain and self.last_model is not None:
+                # Exact cache hit — same domain
+                logger.info(f"Cache hit — reusing {domain} specialist (no reload needed)")
+                model = self.last_model
+                cache_hit = True
+                self.session_stats["cache_hits"] += 1
 
-        elif self._should_keep_current_specialist(domain) and self.last_model is not None:
-            # Streak batching — current specialist has a strong recent streak,
-            # route this query through it rather than thrashing
-            logger.info(
-                f"Streak batching: {self.last_domain} has strong streak, "
-                f"routing {domain} query through current specialist as fallback"
+            else:
+                # Full domain switch — unload previous specialist and load new one
+                if self.last_domain is not None and self.last_model is not None:
+                    prev_model_id = self.config["specialists"][self.last_domain]["model_id"]
+                    logger.info(f"Domain switch: {self.last_domain} → {domain}, unloading previous specialist...")
+                    
+                    # CRITICAL: Clear reference before unloading to allow GC
+                    self.last_model = None
+                    import gc
+                    gc.collect()
+                    
+                    self.loader.unload(prev_model_id)
+
+                logger.info(f"Loading specialist model for {domain}...")
+                start_load = time.time()
+                model, _, _ = self.loader.get(specialist_model_id)
+                spec_load_time = time.time() - start_load
+
+                self.last_domain = domain
+                self.last_model = model
+
+            # 7. Run inference
+            specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
+            specialist = specialist_cls(
+                model=model,
+                max_new_tokens=specialist_config.get("max_new_tokens", 512)
             )
-            model = self.last_model
-            domain = self.last_domain  # override to match loaded model
-            cache_hit = True
-            self.session_stats["cache_hits"] += 1
 
-        else:
-            # Full domain switch — unload previous specialist and load new one
-            if self.last_domain is not None and self.last_model is not None:
-                prev_model_id = self.config["specialists"][self.last_domain]["model_id"]
-                logger.info(f"Domain switch: {self.last_domain} → {domain}, unloading previous specialist...")
-                self.loader.unload(prev_model_id)
+            inference_start = time.time()
+            response_text = specialist.generate(specialist_prompt)
+            inference_time = time.time() - inference_start
 
-            logger.info(f"Loading specialist model for {domain}...")
-            start_load = time.time()
-            model, _, _ = self.loader.get(specialist_model_id)
-            spec_load_time = time.time() - start_load
+            # 8. Append to history
+            self.conversation_history.append({
+                "prompt": user_prompt,
+                "domain": domain,
+                "response": response_text
+            })
+            if len(self.conversation_history) > self.max_history:
+                self.conversation_history = self.conversation_history[-self.max_history:]
 
-            self.last_domain = domain
-            self.last_model = model
+            return {
+                "original_prompt": user_prompt,
+                "domain": domain,
+                "confidence": confidence,
+                "rewritten_prompt": rewritten_prompt,
+                "response": response_text,
+                "router_load_time": 0.0,
+                "specialist_load_time": round(spec_load_time, 2),
+                "inference_time_seconds": round(inference_time, 2),
+                "cache_hit": cache_hit,
+                "context_turns": len(self.conversation_history),
+                "is_multi_agent": False,
+            }
 
-        # 7. Run inference with the specialist (context-enriched prompt)
-        specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
-        specialist = specialist_cls(
-            model=model,
-            max_new_tokens=specialist_config.get("max_new_tokens", 512)
-        )
-
-        inference_start = time.time()
-        response_text = specialist.generate(specialist_prompt)
-        inference_time = time.time() - inference_start
-
-        # 8. Append turn to conversation history
-        self.conversation_history.append({
-            "prompt": user_prompt,
-            "domain": domain,
-            "response": response_text
-        })
-        if len(self.conversation_history) > self.max_history:
-            self.conversation_history = self.conversation_history[-self.max_history:]
-
-        # DO NOT unload specialist — keep hot for next query
-
-        return {
-            "original_prompt": user_prompt,
-            "domain": domain,
-            "confidence": confidence,
-            "rewritten_prompt": rewritten_prompt,
-            "response": response_text,
-            "router_load_time": 0.0,
-            "specialist_load_time": round(spec_load_time, 2),
-            "inference_time_seconds": round(inference_time, 2),
-            "cache_hit": cache_hit,
-            "context_turns": len(self.conversation_history),
-            "is_multi_agent": False,
-        }
+        except Exception as e:
+            logger.error(f"Pipeline error for {domain}: {e}")
+            return {
+                "original_prompt": user_prompt,
+                "domain": domain,
+                "error": str(e),
+                "response": f"I encountered an error while loading the specialist or generating a response: {e}"
+            }
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 

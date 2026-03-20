@@ -77,16 +77,35 @@ def detect_domains(user_prompt: str) -> list:
 
 def is_multi_domain(user_prompt: str) -> bool:
     """
-    Returns True if the query appears to span multiple domains.
-    Requires both a composition signal word AND multiple domain keywords.
+    Returns True only if query genuinely spans multiple domains.
+    Requires BOTH:
+    1. A composition signal word (and, also, plus, etc.)
+    2. Keywords from at least 2 distinct domains present
+    3. Neither domain is 'general' as the sole second domain
+       (general is too broad — almost everything triggers it)
     """
     prompt_lower = user_prompt.lower()
+    
+    # Must have a composition signal
     has_signal = any(signal in prompt_lower for signal in COMPOSITION_SIGNALS)
     if not has_signal:
         return False
-
+    
+    # Detect which domains have keyword matches
     detected = detect_domains(user_prompt)
-    return len(detected) >= 2
+    
+    # Filter out 'general' unless it's paired with a truly specific domain
+    # 'general' keywords are too broad and cause false positives
+    specific_domains = [d for d in detected if d != "general"]
+    
+    # Need at least 2 specific non-general domains
+    # OR 1 specific domain + general if the signal is very explicit
+    if len(specific_domains) >= 2:
+        return True
+    
+    # Single specific domain + general is NOT multi-agent
+    # e.g. "What is the difference between X and Y" → single domain
+    return False
 
 
 def decompose_query(user_prompt: str) -> list:
