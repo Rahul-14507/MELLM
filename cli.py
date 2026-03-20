@@ -140,11 +140,25 @@ def main():
                     task = progress.add_task("Conf", total=100)
                     progress.update(task, completed=conf_percent)
 
-                console.print(Panel(
-                    Text(result['response'], style="bold white"),
-                    title=f"[bold green]Response (Specialist: {domain})[/bold green]",
-                    border_style="green"
-                ))
+                # ── Response display ─────────────────────────────────────────
+                if result.get("is_multi_agent"):
+                    domains_used = result.get("domains_used", [])
+                    console.print(
+                        f"\n[bold magenta]Multi-Agent Composition[/bold magenta] — "
+                        f"Domains: [cyan]{' + '.join(d.upper() for d in domains_used)}[/cyan]"
+                    )
+                    for sub in result.get("sub_results", []):
+                        console.print(Panel(
+                            Text(sub["response"], style="white"),
+                            title=f"[bold cyan]{sub['domain'].upper()} Specialist[/bold cyan]",
+                            border_style="cyan"
+                        ))
+                else:
+                    console.print(Panel(
+                        Text(result['response'], style="bold white"),
+                        title=f"[bold green]Response (Specialist: {domain})[/bold green]",
+                        border_style="green"
+                    ))
                 
                 console.print(
                     f"[dim white]Router optimized prompt: {escape(result['rewritten_prompt'][:100])}...[/dim white]\n"
@@ -165,6 +179,9 @@ def main():
 
                 hot_label = "[green](HOT ♻)[/green]" if cache_hit else "[yellow](freshly loaded)[/yellow]"
 
+                # ── Efficiency panel ──────────────────────────────────────────
+                streak_display = " → ".join(router.domain_streak[-5:]) if router.domain_streak else "none"
+
                 console.print(Panel(
                     f"[bold cyan]Session Efficiency[/bold cyan]\n"
                     f"  Queries this session : [white]{total}[/white]\n"
@@ -172,7 +189,8 @@ def main():
                     f"  Router loads saved   : [green]{total - 1}[/green] "
                     f"(~[yellow]{router_time_saved:.1f}s[/yellow] saved)\n"
                     f"  Active specialist    : [cyan]{domain.upper()}[/cyan] {hot_label}\n"
-                    f"  Context turns active : [cyan]{len(router.conversation_history)}/{router.max_history}[/cyan]",
+                    f"  Context turns active : [cyan]{len(router.conversation_history)}/{router.max_history}[/cyan]\n"
+                    f"  Domain streak        : [cyan]{streak_display}[/cyan]",
                     title="⚡ Efficiency",
                     border_style="dim"
                 ))
