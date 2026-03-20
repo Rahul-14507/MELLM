@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">🧠 MELLM — Multi-Expert LLM Router</h1>
+  <h1 align="center">🧠 MELLM — Lightweight Modular AI Routing Engine</h1>
   <p align="center">
     Run multiple small, domain-specialized LLMs instead of one massive general model.<br/>
     Better answers. Less VRAM. Faster responses.
@@ -16,6 +16,17 @@
   </p>
   <img src="mellm-demo.gif" alt="MELLM Demo" width="100%"/>
 </p>
+
+## ⚡ TL;DR
+
+MELLM is a lightweight AI router that:
+- **Uses a small model** to classify queries with high precision.
+- **Routes them to domain-specific experts** (code, math, medical, legal).
+- **Conserves VRAM** by keeping only one expert model active at a time.
+
+👉 **Better accuracy** than small general models  
+👉 **Runs on 6GB GPUs** (RTX 3050, GTX 1060)  
+👉 **No more waiting** for massive 70B models to layer-stream
 
 ---
 
@@ -45,7 +56,25 @@ This architecture isn't just a consumer hardware workaround — it's a fundament
 | General monolithic | 14B–70B | 16–80 GB | minutes | moderate |
 | **MELLM specialist routing** | **1.5B–7B** | **6 GB** | **8–20s** | **high** |
 
-A domain-specific 7B model consistently outperforms a 70B general model on tasks within its specialty — at less than 10% of the compute cost.
+A domain-specific 7B model can often outperform a larger general model on tasks within its specialty — while using significantly less compute.
+
+## 🧠 Traditional vs MELLM
+
+| Feature | Traditional LLM | MELLM |
+| :--- | :--- | :--- |
+| **Models used** | 1 large monolithic model | Multiple small experts |
+| **VRAM usage** | Always high (OOM risk) | Minimal (fit on consumer GPUs) |
+| **Accuracy** | Generalist / Average | Domain-optimized / Expert |
+| **Efficiency** | Low (brute-force scaling) | High (intelligent routing) |
+
+## 💡 Why this matters
+
+Running large LLMs locally is expensive and often impractical. MELLM shows that:
+- **You don’t need a single massive model** to get expert answers.
+- **You can orchestrate experts** to achieve better results with less hardware.
+- **Efficient routing** beats brute-force scaling every time.
+
+This opens the door to local AI systems on consumer hardware, modular architectures that grow with your needs, and lower-cost deployment at scale.
 
 ### Key Features
 
@@ -168,21 +197,23 @@ MELLM/
 
 ## 🚀 Getting Started
 
-### 1. Clone the Repository
+### Linux
+
+#### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Rahul-14507/MELLM
 cd MELLM
 ```
 
-### 2. Create a Virtual Environment
+#### 2. Create a Virtual Environment
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install llama-cpp-python (with CUDA)
+#### 3. Install llama-cpp-python (with CUDA)
 
 > **⚠️ Important:** `llama-cpp-python` must be installed **separately first** with CUDA wheels. Installing it via `pip install -r requirements.txt` alone will NOT enable GPU acceleration.
 
@@ -201,13 +232,13 @@ Verify GPU support:
 python -c "from llama_cpp import Llama; print('llama-cpp-python installed successfully')"
 ```
 
-### 4. Install Remaining Dependencies
+#### 4. Install Remaining Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 5. Set Up Environment Variables
+#### 5. Set Up Environment Variables
 
 ```bash
 cp .env.example .env
@@ -217,7 +248,7 @@ echo "HF_TOKEN=your_huggingface_token_here" > .env
 
 You need a [Hugging Face token](https://huggingface.co/settings/tokens) to download models. Some models may require accepting their license on the Hugging Face model page first.
 
-### 6. Run MELLM
+#### 6. Run MELLM
 
 ```bash
 # Interactive CLI mode
@@ -235,21 +266,18 @@ python api.py
 
 ---
 
-# Windows Setup via WSL2
+### Windows (via WSL2)
 
 > MELLM runs natively on Linux. Windows users can run it with full GPU acceleration
 > through WSL2 (Windows Subsystem for Linux 2), which gives you a real Ubuntu
 > environment with direct access to your NVIDIA GPU.
 
-## Prerequisites
-
+**Prerequisites:**
 - Windows 10 (Build 19041+) or Windows 11
 - NVIDIA GPU with 6GB+ VRAM
 - NVIDIA driver **470.76+** installed on Windows (not inside WSL — the Windows driver handles the bridge)
 
----
-
-## Step 1 — Enable WSL2
+#### Step 1 — Enable WSL2
 
 Open PowerShell as Administrator and run:
 
@@ -271,9 +299,7 @@ wsl --list --verbose
 # Should show VERSION 2
 ```
 
----
-
-## Step 2 — Install NVIDIA CUDA inside WSL2
+#### Step 2 — Install NVIDIA CUDA inside WSL2
 
 > **Important:** Do NOT install the NVIDIA driver inside WSL2. The Windows driver already
 > handles GPU access. You only need the CUDA toolkit inside WSL2.
@@ -300,9 +326,7 @@ nvidia-smi
 # Should show your GPU name and VRAM
 ```
 
----
-
-## Step 3 — Install Python 3.11
+#### Step 3 — Install Python 3.11
 
 ```bash
 sudo apt update
@@ -315,9 +339,7 @@ sudo apt install python3.11 python3.11-venv python3.11-dev -y
 python3.11 --version
 ```
 
----
-
-## Step 4 — Clone and set up MELLM
+#### Step 4 — Clone and set up MELLM
 
 ```bash
 # Navigate to a good location (WSL2 filesystem, not /mnt/c — see note below)
@@ -340,9 +362,7 @@ python -c "from llama_cpp import Llama; import ctypes; print('OK')"
 pip install -r requirements.txt
 ```
 
----
-
-## Step 5 — Run MELLM
+#### Step 5 — Run MELLM
 
 ```bash
 source .venv/bin/activate
@@ -351,9 +371,7 @@ python cli.py
 
 The setup wizard will detect your GPU and recommend appropriate model sizes.
 
----
-
-## ⚠️ Important Notes for Windows Users
+#### ⚠️ Important Notes for Windows Users
 
 **Store your project on the WSL2 filesystem, not Windows drives.**
 
@@ -399,9 +417,7 @@ python api.py
 curl http://localhost:8000/health
 ```
 
----
-
-## Troubleshooting
+#### WSL2 Troubleshooting
 
 **`nvidia-smi` not found inside WSL2:**
 Update your Windows NVIDIA driver to 470.76+. The WSL2 GPU bridge requires a recent
@@ -425,6 +441,17 @@ medical model in `user_config.yaml`.
 ---
 
 ## 💻 Usage
+
+## ⚡ Quick Demo
+
+```bash
+python cli.py
+```
+
+**Try these queries to see the router in action:**
+1. "Explain binary search in Java"
+2. "Now in Python"
+3. "What is the time complexity?"
 
 ### CLI Mode
 
@@ -533,9 +560,11 @@ python cli.py --preload medical
 
 ---
 
-## ⚡ Performance
+## ⚡ Performance & Benchmarks
 
-Benchmarked on **NVIDIA RTX 3050 (6GB VRAM)** with CUDA 12.1:
+Benchmarked on **NVIDIA GeForce RTX 3050 6GB Laptop GPU** · CUDA 12.1 · Python 3.11
+
+### Model Load & Inference
 
 | Stage | 1.5B Models | 3B Models | 7B Models (Q2_K) |
 |-------|-------------|-----------|-------------------|
@@ -551,6 +580,38 @@ Benchmarked on **NVIDIA RTX 3050 (6GB VRAM)** with CUDA 12.1:
 | Specialist load | 1-6s | **0s (hot cache)** | 1-6s (new domain) |
 | Inference (1.5B) | ~5-15s | ~5-15s | ~5-15s |
 | **Total typical query** | **~6-20s** | **~5-15s** | **~6-20s** |
+
+### Routing Accuracy
+
+Tested across 25 queries (5 per domain):
+
+| Domain | Correct | Accuracy |
+|--------|---------|----------|
+| Code | 4/5 | 80% |
+| Math | 5/5 | 100% |
+| Medical | 5/5 | 100% |
+| Legal | 5/5 | 100% |
+| General | 4/5 | 80% |
+| **Overall** | **22/25** | **88%** |
+
+Misclassified queries were genuinely ambiguous (e.g. "Debug this segmentation fault in C++" → classified as general; "Explain Occam's Razor" → classified as math). Core domain classification is 100% accurate for unambiguous queries.
+
+### End-to-End Latency (per domain)
+
+| Domain | Model | Cold Load | Hot Cache | Inference | Total (cold) |
+|--------|-------|-----------|-----------|-----------|--------------|
+| **Code** | Qwen2.5-Coder-1.5B | ~3.4s | **0.0s** | ~7.2s | ~17s |
+| **Math** | Qwen2.5-Math-1.5B | ~3.8s | **0.0s** | ~9.5s | ~20s |
+| **Medical** | BioMistral-7B Q2 | ~6.3s | **0.0s** | ~18.6s | ~32s |
+| **Legal** | Magistrate-3B | ~5.8s | **0.0s** | ~18.5s | ~31s |
+| **General** | Qwen2.5-1.5B | ~0.0s* | **0.0s** | ~2.3s | ~10s |
+
+\* General specialist was already cached from router (same base model)
+
+**Router overhead: 0s** — persistent in VRAM, never reloaded between queries.
+
+**Hot cache = 0s load** — same-domain follow-up queries skip loading entirely.
+Consecutive queries in a coding session: first query ~17s, all subsequent ~12s.
 
 ---
 
@@ -632,56 +693,6 @@ specialists:
 
 ---
 
-## 🤝 Contributing
-
-Contributions are welcome! Here's how to get started:
-
-### Development Setup
-
-1. Fork the repository and clone your fork
-2. Follow the [Getting Started](#-getting-started) guide above
-3. Create a feature branch:
-```bash
-git checkout -b feature/your-feature-name
-```
-
-### Contribution Ideas
-
-- 🌍 **New domain specialists** — Add support for science, finance, history, etc.
-- 🧪 **Evaluation benchmarks** — Build test suites to measure routing accuracy and specialist quality
-- 🖥️ **Web UI** — Build a Gradio or Streamlit frontend
-- 📊 **Metrics dashboard** — Track routing accuracy, latency, and VRAM usage over time
-- 🏎️ **Performance optimization** — Explore batch inference, speculative decoding, or model caching strategies
-- 📝 **Better prompts** — Improve specialist system prompts for higher-quality responses
-- 🐛 **Bug fixes** — Check the Issues tab for known bugs
-
-### Code Style
-
-- Use descriptive variable names and docstrings
-- Follow PEP 8 conventions
-- Keep specialist classes focused — one domain per file
-- Test on a 6GB VRAM GPU before submitting (or document higher requirements)
-
-### Pull Request Process
-
-1. Ensure your code runs without errors on Python 3.10+
-2. Test both CLI and API modes
-3. Update the README if you've added new features or changed configuration
-4. Update `config.yaml` and `GGUF_REGISTRY` if you've added or changed models
-5. Submit a PR with a clear description of what changed and why
-
----
-
-## 🐛 Known Limitations
-
-- **First-query latency**: The first query for a new domain takes 1-6s to load the specialist; subsequent same-domain queries are instant (hot cache)
-- **Context window**: 7B models are limited to 1024 tokens of context to fit in VRAM
-- **Single query at a time**: The system processes one query before accepting the next
-- **Context continuity for the API**: The conversation history is session-bound to the `LLMRouter` instance; the REST API resets on each server restart
-- **Domain continuity limitations**: Very ambiguous short queries (e.g., "More?") are biased toward the previous domain, which may not always be correct
-
----
-
 ## 🗺️ Roadmap
 
 - [x] Persistent router model (no per-query load overhead)
@@ -701,41 +712,13 @@ git checkout -b feature/your-feature-name
 
 ---
 
-## 📊 Benchmarks
+## 🐛 Known Limitations
 
-Benchmarked on **NVIDIA GeForce RTX 3050 6GB Laptop GPU** · CUDA 12.1 · Python 3.11
-
-### Routing Accuracy
-
-Tested across 25 queries (5 per domain):
-
-| Domain | Correct | Accuracy |
-|--------|---------|----------|
-| Code | 4/5 | 80% |
-| Math | 5/5 | 100% |
-| Medical | 5/5 | 100% |
-| Legal | 5/5 | 100% |
-| General | 4/5 | 80% |
-| **Overall** | **22/25** | **88%** |
-
-Misclassified queries were genuinely ambiguous (e.g. "Debug this segmentation fault in C++" → classified as general; "Explain Occam's Razor" → classified as math). Core domain classification is 100% accurate for unambiguous queries.
-
-### End-to-End Latency
-
-| Domain | Model | Cold Load | Hot Cache | Inference | Total (cold) |
-|--------|-------|-----------|-----------|-----------|--------------|
-| **Code** | Qwen2.5-Coder-1.5B | ~3.4s | **0.0s** | ~7.2s | ~17s |
-| **Math** | Qwen2.5-Math-1.5B | ~3.8s | **0.0s** | ~9.5s | ~20s |
-| **Medical** | BioMistral-7B Q2 | ~6.3s | **0.0s** | ~18.6s | ~32s |
-| **Legal** | Magistrate-3B | ~5.8s | **0.0s** | ~18.5s | ~31s |
-| **General** | Qwen2.5-1.5B | ~0.0s* | **0.0s** | ~2.3s | ~10s |
-
-\* General specialist was already cached from router (same base model)
-
-**Router overhead: 0s** — persistent in VRAM, never reloaded between queries.
-
-**Hot cache = 0s load** — same-domain follow-up queries skip loading entirely.
-Consecutive queries in a coding session: first query ~17s, all subsequent ~12s.
+- **First-query latency**: The first query for a new domain takes 1-6s to load the specialist; subsequent same-domain queries are instant (hot cache)
+- **Context window**: 7B models are limited to 1024 tokens of context to fit in VRAM
+- **Single query at a time**: The system processes one query before accepting the next
+- **Context continuity for the API**: The conversation history is session-bound to the `LLMRouter` instance; the REST API resets on each server restart
+- **Domain continuity limitations**: Very ambiguous short queries (e.g., "More?") are biased toward the previous domain, which may not always be correct
 
 ---
 
@@ -750,6 +733,21 @@ Consecutive queries in a coding session: first query ~17s, all subsequent ~12s.
 | **Configuration** | [PyYAML](https://pyyaml.org/) | YAML-based model and parameter configuration |
 | **Environment** | [python-dotenv](https://pypi.org/project/python-dotenv/) | Secure token management via `.env` |
 | **Model Format** | [GGUF](https://github.com/ggerganov/ggml) | Quantized model format (Q2_K, Q4_K_M) |
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide covering development setup, how to add a new specialist, code style, and the PR process.
+
+**Quick ideas to get started:**
+- 🌍 **New domain specialists** — Add support for science, finance, history, etc.
+- 🧪 **Evaluation benchmarks** — Build test suites to measure routing accuracy and specialist quality
+- 🖥️ **Web UI** — Build a Gradio or Streamlit frontend
+- 📊 **Metrics dashboard** — Track routing accuracy, latency, and VRAM usage over time
+- 🏎️ **Performance optimization** — Explore batch inference, speculative decoding, or model caching strategies
+- 📝 **Better prompts** — Improve specialist system prompts for higher-quality responses
+- 🐛 **Bug fixes** — Check the [Issues](https://github.com/Rahul-14507/MELLM/issues) tab for known bugs
 
 ---
 
