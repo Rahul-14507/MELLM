@@ -14,6 +14,7 @@
     <img src="https://img.shields.io/github/issues/Rahul-14507/MELLM" alt="GitHub Issues"/>
     <img src="https://img.shields.io/github/last-commit/Rahul-14507/MELLM" alt="Last Commit"/>
   </p>
+  <img src="mellm-demo.gif" alt="MELLM Demo" width="100%"/>
 </p>
 
 ---
