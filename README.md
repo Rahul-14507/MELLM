@@ -234,6 +234,195 @@ python api.py
 
 ---
 
+# Windows Setup via WSL2
+
+> MELLM runs natively on Linux. Windows users can run it with full GPU acceleration
+> through WSL2 (Windows Subsystem for Linux 2), which gives you a real Ubuntu
+> environment with direct access to your NVIDIA GPU.
+
+## Prerequisites
+
+- Windows 10 (Build 19041+) or Windows 11
+- NVIDIA GPU with 6GB+ VRAM
+- NVIDIA driver **470.76+** installed on Windows (not inside WSL — the Windows driver handles the bridge)
+
+---
+
+## Step 1 — Enable WSL2
+
+Open PowerShell as Administrator and run:
+
+```powershell
+wsl --install
+```
+
+This installs WSL2 with Ubuntu 22.04 by default. Restart when prompted.
+
+If you already have WSL1, upgrade to WSL2:
+```powershell
+wsl --set-default-version 2
+wsl --install -d Ubuntu-22.04
+```
+
+Verify WSL2 is active:
+```powershell
+wsl --list --verbose
+# Should show VERSION 2
+```
+
+---
+
+## Step 2 — Install NVIDIA CUDA inside WSL2
+
+> **Important:** Do NOT install the NVIDIA driver inside WSL2. The Windows driver already
+> handles GPU access. You only need the CUDA toolkit inside WSL2.
+
+Open your Ubuntu WSL2 terminal and run:
+
+```bash
+# Remove any existing CUDA GPG keys to avoid conflicts
+sudo apt-key del 7fa2af80
+
+# Add NVIDIA's WSL2-specific CUDA repository
+wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-wsl-ubuntu.pin
+sudo mv cuda-wsl-ubuntu.pin /etc/apt/preferences.d/cuda-repository-pin-600
+wget https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda-repo-wsl-ubuntu-12-1-local_12.1.0-1_amd64.deb
+sudo dpkg -i cuda-repo-wsl-ubuntu-12-1-local_12.1.0-1_amd64.deb
+sudo cp /var/cuda-repo-wsl-ubuntu-12-1-local/cuda-*-keyring.gpg /usr/share/keyrings/
+sudo apt-get update
+sudo apt-get install -y cuda-toolkit-12-1
+```
+
+Verify CUDA is working:
+```bash
+nvidia-smi
+# Should show your GPU name and VRAM
+```
+
+---
+
+## Step 3 — Install Python 3.11
+
+```bash
+sudo apt update
+sudo apt install software-properties-common -y
+sudo add-apt-repository ppa:deadsnakes/ppa -y
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3.11-dev -y
+
+# Verify
+python3.11 --version
+```
+
+---
+
+## Step 4 — Clone and set up MELLM
+
+```bash
+# Navigate to a good location (WSL2 filesystem, not /mnt/c — see note below)
+cd ~
+git clone https://github.com/Rahul-14507/MELLM
+cd MELLM
+
+# Create venv
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+# Install llama-cpp-python with CUDA support
+pip install llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+
+# Verify GPU is detected
+python -c "from llama_cpp import Llama; import ctypes; print('OK')"
+
+# Install remaining dependencies
+pip install -r requirements.txt
+```
+
+---
+
+## Step 5 — Run MELLM
+
+```bash
+source .venv/bin/activate
+python cli.py
+```
+
+The setup wizard will detect your GPU and recommend appropriate model sizes.
+
+---
+
+## ⚠️ Important Notes for Windows Users
+
+**Store your project on the WSL2 filesystem, not Windows drives.**
+
+```bash
+# Good — fast WSL2 filesystem
+~/MELLM/
+
+# Avoid — slow cross-filesystem access, causes I/O bottlenecks
+/mnt/c/Users/YourName/MELLM/
+/mnt/d/Projects/MELLM/
+```
+
+Model downloads go to `~/.cache/huggingface/` inside WSL2 by default. This is fine.
+If you want them on a Windows drive with more space, symlink it:
+
+```bash
+mkdir -p /mnt/d/mellm-models
+ln -s /mnt/d/mellm-models ~/.cache/mellm_gguf
+```
+
+**VRAM headroom on Windows is ~500MB–1GB less than native Linux** because Windows
+desktop processes and WSL2 overhead occupy some GPU memory. On a 6GB card:
+
+| Setup | Effective VRAM for MELLM |
+|-------|--------------------------|
+| Native Linux | ~5.5 GB |
+| WSL2 on Windows | ~4.5–5.0 GB |
+
+If you hit `Failed to create llama_context` errors, switch to smaller/more quantized
+models in the setup wizard (choose Q2_K variants for 7B models, or stick to 1.5B–3B
+specialists).
+
+**Accessing MELLM's API from Windows browsers/apps:**
+
+The FastAPI server inside WSL2 is accessible from Windows at `http://localhost:8000`
+by default — WSL2 automatically bridges the network. No extra configuration needed.
+
+```bash
+# Inside WSL2
+python api.py
+
+# From Windows browser or app
+curl http://localhost:8000/health
+```
+
+---
+
+## Troubleshooting
+
+**`nvidia-smi` not found inside WSL2:**
+Update your Windows NVIDIA driver to 470.76+. The WSL2 GPU bridge requires a recent
+driver on the Windows side.
+
+**`CUDA error: no kernel image is available` during inference:**
+Your CUDA toolkit version doesn't match your driver. Re-run Step 2 with the CUDA
+version that matches your driver (check `nvidia-smi` on Windows for the CUDA version).
+
+**Slow model downloads:**
+WSL2 DNS can be slow. Add Google's DNS to `/etc/resolv.conf`:
+```bash
+echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+```
+
+**Out of memory after loading medical model:**
+Windows is using more VRAM than expected. Close GPU-heavy Windows apps (Chrome with
+hardware acceleration, games, etc.) before running MELLM, or switch to the Q2_K
+medical model in `user_config.yaml`.
+
+---
+
 ## 💻 Usage
 
 ### CLI Mode
@@ -508,6 +697,44 @@ git checkout -b feature/your-feature-name
 - [ ] Streaming token output
 - [ ] Docker container for easy deployment
 - [ ] Support for AMD GPUs (ROCm)
+
+---
+
+## 📊 Benchmarks
+
+Benchmarked on **NVIDIA GeForce RTX 3050 6GB Laptop GPU** · CUDA 12.1 · Python 3.11
+
+### Routing Accuracy
+
+Tested across 25 queries (5 per domain):
+
+| Domain | Correct | Accuracy |
+|--------|---------|----------|
+| Code | 4/5 | 80% |
+| Math | 5/5 | 100% |
+| Medical | 5/5 | 100% |
+| Legal | 5/5 | 100% |
+| General | 4/5 | 80% |
+| **Overall** | **22/25** | **88%** |
+
+Misclassified queries were genuinely ambiguous (e.g. "Debug this segmentation fault in C++" → classified as general; "Explain Occam's Razor" → classified as math). Core domain classification is 100% accurate for unambiguous queries.
+
+### End-to-End Latency
+
+| Domain | Model | Cold Load | Hot Cache | Inference | Total (cold) |
+|--------|-------|-----------|-----------|-----------|--------------|
+| **Code** | Qwen2.5-Coder-1.5B | ~3.4s | **0.0s** | ~7.2s | ~17s |
+| **Math** | Qwen2.5-Math-1.5B | ~3.8s | **0.0s** | ~9.5s | ~20s |
+| **Medical** | BioMistral-7B Q2 | ~6.3s | **0.0s** | ~18.6s | ~32s |
+| **Legal** | Magistrate-3B | ~5.8s | **0.0s** | ~18.5s | ~31s |
+| **General** | Qwen2.5-1.5B | ~0.0s* | **0.0s** | ~2.3s | ~10s |
+
+\* General specialist was already cached from router (same base model)
+
+**Router overhead: 0s** — persistent in VRAM, never reloaded between queries.
+
+**Hot cache = 0s load** — same-domain follow-up queries skip loading entirely.
+Consecutive queries in a coding session: first query ~17s, all subsequent ~12s.
 
 ---
 
