@@ -75,21 +75,21 @@ class LLMRouter:
         if not self.conversation_history:
             return user_prompt
         
+        # Keep history very short — just topic keywords, not full responses
         context_lines = []
         for turn in self.conversation_history[-self.max_history:]:
-            # Truncate long responses to keep context concise
-            response_preview = turn["response"][:300].strip()
-            if len(turn["response"]) > 300:
-                response_preview += "..."
-            context_lines.append(
-                f"User: {turn['prompt']}\n"
-                f"Assistant ({turn['domain']}): {response_preview}"
-            )
+            # Only first 80 chars of response to give topic hint, not full content
+            response_hint = turn["response"][:80].replace("\n", " ").strip()
+            context_lines.append(f"- [{turn['domain'].upper()}] {turn['prompt']} → {response_hint}")
         
-        context = "\n\n".join(context_lines)
+        context = "\n".join(context_lines)
+        
         return (
-            f"Previous conversation:\n{context}\n\n"
-            f"New query: {user_prompt}"
+            f"[CONTEXT — previous turns for reference only]\n"
+            f"{context}\n"
+            f"[END CONTEXT]\n\n"
+            f"[NEW QUERY — classify and rewrite this]\n"
+            f"{user_prompt}"
         )
 
     def _build_specialist_prompt(self, rewritten_prompt: str) -> str:
@@ -97,14 +97,47 @@ class LLMRouter:
         if not self.conversation_history:
             return rewritten_prompt
         
-        context_lines = "\n".join([
-            f"User: {t['prompt']}\nAssistant: {t['response'][:200]}..."
+        history_text = "\n".join([
+            f"User: {t['prompt']}\nAssistant: {t['response'][:150]}..."
             for t in self.conversation_history[-2:]
         ])
         return (
-            f"Previous conversation context:\n{context_lines}\n\n"
+            f"Conversation history:\n{history_text}\n\n"
             f"Current request: {rewritten_prompt}"
         )
+
+    def _apply_domain_continuity(self, domain: str, user_prompt: str) -> str:
+        """If query is a short follow-up, bias toward keeping the previous domain."""
+        if not self.conversation_history:
+            return domain
+        
+        prev_domain = self.conversation_history[-1]["domain"]
+        word_count = len(user_prompt.strip().split())
+        
+        # Short follow-up queries (under 7 words) with no explicit domain signal
+        # should inherit the previous domain
+        domain_signal_words = {
+            "code": ["code", "implement", "program", "function", "class", "python", 
+                     "java", "javascript", "c++", "script", "algorithm"],
+            "math": ["solve", "calculate", "integral", "derivative", "equation", "proof"],
+            "medical": ["symptoms", "disease", "diagnosis", "treatment", "medicine"],
+            "legal": ["law", "legal", "contract", "lawsuit", "rights"],
+            "general": ["explain", "what is", "who is", "history", "philosophy"]
+        }
+        
+        prompt_lower = user_prompt.lower()
+        
+        # Check if any explicit domain signal overrides
+        for d, signals in domain_signal_words.items():
+            if any(signal in prompt_lower for signal in signals):
+                return domain  # explicit signal found, trust the router
+        
+        # No explicit signal + short query = stay in previous domain
+        if word_count <= 6 and prev_domain != domain:
+            logger.info(f"Domain continuity: short follow-up detected, keeping '{prev_domain}' over router's '{domain}'")
+            return prev_domain
+        
+        return domain
 
     # ─── Main Query Pipeline ──────────────────────────────────────────────────
 
@@ -126,6 +159,9 @@ class LLMRouter:
         domain = decision["domain"]
         confidence = decision["confidence"]
         rewritten_prompt = decision["rewritten_prompt"]
+        
+        # Apply domain continuity for short follow-up queries
+        domain = self._apply_domain_continuity(domain, user_prompt)
         
         if confidence < 0.6:
             domain = "general"
