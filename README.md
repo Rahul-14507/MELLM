@@ -729,8 +729,8 @@ specialists:
 - [x] Domain-aware session history (streak display)
 - [x] Interactive setup wizard with hardware detection
 - [x] FastAPI REST endpoint
+- [x] Evaluation benchmark suite for routing accuracy
 - [ ] Web UI (Gradio/Streamlit)
-- [ ] Evaluation benchmark suite for routing accuracy
 - [ ] Streaming token output
 - [ ] Docker container for easy deployment
 - [ ] Support for AMD GPUs (ROCm)
