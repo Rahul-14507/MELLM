@@ -2,7 +2,6 @@ import time
 import logging
 import torch
 from pathlib import Path
-from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 
 logger = logging.getLogger("LLMRouter.Loader")
@@ -77,12 +76,60 @@ class ModelLoader:
             return local_path
 
         logger.info(f"Downloading GGUF: {repo_id}/{filename} (This may take a while...)")
-        downloaded = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            local_dir=str(self.cache_dir)
+        self._download_with_progress(repo_id, filename, local_path)
+        return local_path
+
+    def _download_with_progress(self, repo_id: str, filename: str, dest_path: Path) -> None:
+        """Downloads a GGUF file from HuggingFace with a rich progress bar."""
+        import requests
+        from rich.progress import (
+            Progress, DownloadColumn, BarColumn,
+            TextColumn, TimeRemainingColumn, TransferSpeedColumn
         )
-        return Path(downloaded)
+        from huggingface_hub import hf_hub_url
+        from huggingface_hub.utils import build_hf_headers
+        import os
+
+        url = hf_hub_url(repo_id=repo_id, filename=filename)
+        headers = build_hf_headers(token=os.environ.get("HF_TOKEN"))
+
+        # Stream the download
+        response = requests.get(url, headers=headers, stream=True, allow_redirects=True)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get("content-length", 0))
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_suffix(".tmp")
+
+        with Progress(
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(bar_width=40),
+            "[progress.percentage]{task.percentage:>3.1f}%",
+            "•",
+            DownloadColumn(),
+            "•",
+            TransferSpeedColumn(),
+            "•",
+            TimeRemainingColumn(),
+            transient=False,
+        ) as progress:
+            task = progress.add_task(f"Downloading {filename}", total=total_size)
+
+            try:
+                with open(tmp_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+                        if chunk:
+                            f.write(chunk)
+                            progress.update(task, advance=len(chunk))
+            except Exception as e:
+                # Clean up partial download on failure
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                raise RuntimeError(f"Download failed: {e}")
+
+        # Rename tmp to final only after successful download
+        tmp_path.rename(dest_path)
+        logger.info(f"Saved to: {dest_path}")
 
     def get(self, model_id: str, is_router: bool = False):
         """
