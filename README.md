@@ -76,6 +76,31 @@ Running large LLMs locally is expensive and often impractical. MELLM shows that:
 
 This opens the door to local AI systems on consumer hardware, modular architectures that grow with your needs, and lower-cost deployment at scale.
 
+## 🎯 MELLM vs Mixture-of-Experts — What's Different?
+
+You may have heard of **Mixture-of-Experts (MoE)** — the architecture behind models like Mixtral and GPT-4. The concept is similar: route inputs to specialized sub-networks. But production MoE has critical limitations that MELLM directly addresses.
+
+| | Production MoE (Mixtral, GPT-4) | MELLM |
+| :--- | :--- | :--- |
+| **Access** | Closed, trained by big labs | Fully open — swap any GGUF model |
+| **Hardware** | Requires multi-GPU clusters | Runs on an RTX 3050 or even CPU |
+| **Experts** | Fixed at training time | Plug-and-play — add new domains anytime |
+| **Routing** | Statistical (trained gating network) | LLM-based — actually *understands* your query |
+| **Focus** | Research / production API | Developer tool / local framework |
+
+### 🧩 Think: "App Store for LLM Experts"
+MELLM's open architecture lets anyone contribute a new specialist:
+- Add a **finance model** for stock analysis
+- Add a **science model** for research queries
+- Add a **language model** for translation tasks
+
+No retraining, no new architecture — just register it in `GGUF_REGISTRY` and it's immediately available as a domain expert.
+
+### 🔧 LLM-as-Router — A Cutting-Edge Twist
+Most open-source routers use keyword matching or fine-tuned classifiers. MELLM uses an LLM in JSON-output mode to both **classify the domain** and **rewrite the prompt** for optimal specialist performance. This "LLM as router" approach is an active research direction — MELLM brings it to a practical, runnable implementation.
+
+> **Honest positioning:** MELLM is not a new concept. But *open, modular, low-hardware MoE routing* is genuinely underserved in the open-source ecosystem. That's the gap this fills.
+
 ### Key Features
 
 - 🔀 **Intelligent Routing** — A 1.5B router classifies queries into 5 domains with >90% accuracy and rewrites prompts for optimal specialist output
