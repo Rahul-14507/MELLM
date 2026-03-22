@@ -48,6 +48,9 @@ class QueryResponse(BaseModel):
     domains_used: Optional[List[str]] = None
     sub_results: Optional[List[SubResult]] = None
 
+from fastapi.responses import StreamingResponse
+import json
+
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     try:
@@ -68,6 +71,38 @@ async def query(request: QueryRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/query/stream")
+async def query_stream(request: QueryRequest):
+    """
+    Streaming version of /query. Returns Server-Sent Events.
+    Each event is a JSON object with a 'type' field:
+    - {"type": "routing", "domain": "...", ...}
+    - {"type": "loaded", "load_time": 1.2, "cache_hit": false}
+    - {"type": "token", "content": "..."}
+    - {"type": "done", "response": "...", ...}
+    
+    Usage with curl:
+    curl -X POST http://localhost:8000/query/stream \
+      -H "Content-Type: application/json" \
+      -d '{"prompt": "Binary search in Java"}' \
+      --no-buffer
+    """
+    def generate():
+        try:
+            for event in router.stream_query(request.prompt):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 @app.delete("/context")
 async def clear_context():

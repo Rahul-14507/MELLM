@@ -218,6 +218,10 @@ MELLM/
 | **Python** | 3.10+ | 3.11+ |
 | **OS** | Linux (Ubuntu 22.04+) | Linux with NVIDIA drivers |
 
+### Hardware Scalability
+
+MELLM works with any GGUF model on HuggingFace. The setup wizard automatically recommends model sizes based on your GPU. Users with larger GPUs can run 13B, 34B, or 70B specialists by simply updating `GGUF_REGISTRY` and `config.yaml` — no code changes needed.
+
 ---
 
 ## 🚀 Getting Started
@@ -729,9 +733,9 @@ specialists:
 - [x] Domain-aware session history (streak display)
 - [x] Interactive setup wizard with hardware detection
 - [x] FastAPI REST endpoint
-- [x] Evaluation benchmark suite for routing accuracy
 - [ ] Web UI (Gradio/Streamlit)
-- [ ] Streaming token output
+- [x] Evaluation benchmark suite for routing accuracy
+- [x] Streaming token output
 - [ ] Docker container for easy deployment
 - [ ] Support for AMD GPUs (ROCm)
 

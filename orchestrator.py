@@ -1,4 +1,5 @@
 import time
+from typing import Generator
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -248,6 +249,121 @@ class LLMRouter:
         }
 
     # ─── Main Query Pipeline ──────────────────────────────────────────────────
+
+    def stream_query(self, user_prompt: str) -> Generator[dict, None, None]:
+        """
+        Streaming version of query(). 
+        First yields {"type": "routing", ...} with domain info,
+        then yields {"type": "token", "content": "..."} for each token,
+        finally yields {"type": "done", ...} with full metrics.
+        """
+        import time
+
+        self.session_stats["total_queries"] += 1
+
+        # Check for multi-domain — fall back to non-streaming for composer
+        if is_multi_domain(user_prompt):
+            result = self._run_multi_agent(user_prompt)
+            yield {"type": "routing", "domain": result["domain"], 
+                   "rewritten_prompt": result["rewritten_prompt"],
+                   "is_multi_agent": True}
+            yield {"type": "token", "content": result["response"]}
+            yield {"type": "done", **result}
+            return
+
+        # Build contextual prompt
+        contextual_prompt = self._build_contextual_prompt(user_prompt)
+
+        # Route with persistent router
+        decision = self.router_logic.classify(
+            self.router_model, None, contextual_prompt
+        )
+        domain = decision["domain"]
+        confidence = decision["confidence"]
+        rewritten_prompt = decision["rewritten_prompt"]
+
+        if confidence < 0.6:
+            domain = "general"
+            rewritten_prompt = self.optimizer.optimize(domain, user_prompt)
+
+        domain = self._apply_domain_continuity(domain, user_prompt)
+        self.domain_streak.append(domain)
+
+        # Signal routing decision to caller immediately
+        yield {"type": "routing", "domain": domain,
+               "rewritten_prompt": rewritten_prompt,
+               "confidence": confidence,
+               "is_multi_agent": False}
+
+        # Load specialist (hot cache or fresh)
+        specialist_config = self.config["specialists"][domain]
+        specialist_model_id = specialist_config["model_id"]
+        spec_load_time = 0.0
+        cache_hit = False
+
+        if self.last_domain == domain and self.last_model is not None:
+            model = self.last_model
+            cache_hit = True
+            self.session_stats["cache_hits"] += 1
+        else:
+            if self.last_domain is not None and self.last_model is not None:
+                prev_model_id = self.config["specialists"][self.last_domain]["model_id"]
+                # CRITICAL: Clear reference before unloading to allow GC
+                self.last_model = None
+                import gc
+                gc.collect()
+                self.loader.unload(prev_model_id)
+
+            start_load = time.time()
+            model, _, _ = self.loader.get(specialist_model_id)
+            spec_load_time = time.time() - start_load
+            self.last_domain = domain
+            self.last_model = model
+
+        # Signal load complete
+        yield {"type": "loaded", "load_time": round(spec_load_time, 2),
+               "cache_hit": cache_hit}
+
+        # Stream tokens
+        specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
+        specialist = specialist_cls(
+            model=model,
+            max_new_tokens=specialist_config.get("max_new_tokens", 512)
+        )
+
+        specialist_prompt = self._build_specialist_prompt(rewritten_prompt)
+        full_response = ""
+        inference_start = time.time()
+
+        for token in specialist.stream_generate(specialist_prompt):
+            full_response += token
+            yield {"type": "token", "content": token}
+
+        inference_time = time.time() - inference_start
+
+        # Update conversation history
+        self.conversation_history.append({
+            "prompt": user_prompt,
+            "domain": domain,
+            "response": full_response
+        })
+        if len(self.conversation_history) > self.max_history:
+            self.conversation_history = self.conversation_history[-self.max_history:]
+
+        # Final done signal with full metrics
+        yield {
+            "type": "done",
+            "original_prompt": user_prompt,
+            "domain": domain,
+            "confidence": confidence,
+            "rewritten_prompt": rewritten_prompt,
+            "response": full_response,
+            "router_load_time": 0.0,
+            "specialist_load_time": round(spec_load_time, 2),
+            "inference_time_seconds": round(inference_time, 2),
+            "cache_hit": cache_hit,
+            "context_turns": len(self.conversation_history),
+        }
 
     def query(self, user_prompt: str) -> dict:
         """

@@ -16,6 +16,93 @@ from orchestrator import LLMRouter
 
 console = Console()
 
+from rich.live import Live
+from rich.text import Text
+from rich.panel import Panel
+
+def handle_query_streaming(router: LLMRouter, user_input: str, console: Console):
+    """Handles a query with live streaming token output."""
+    
+    domain = "..."
+    rewritten_prompt = ""
+    load_time = 0.0
+    inference_time = 0.0
+    cache_hit = False
+    context_turns = 0
+    accumulated = ""
+
+    with console.status(
+        "[cyan]Processing... (Router is persistent, specialist loads on-demand)",
+        spinner="dots"
+    ) as status:
+        stream = router.stream_query(user_input)
+        
+        # Process routing event
+        for event in stream:
+            if event["type"] == "routing":
+                domain = event["domain"]
+                rewritten_prompt = event.get("rewritten_prompt", "")
+                if event.get("is_multi_agent"):
+                    status.update("[cyan]Multi-agent composition — routing to specialists...")
+                else:
+                    status.update(f"[cyan]Routed to [bold]{domain.upper()}[/bold] — loading specialist...")
+                break
+
+        # Process loaded event
+        for event in stream:
+            if event["type"] == "loaded":
+                load_time = event["load_time"]
+                cache_hit = event["cache_hit"]
+                cache_str = "HOT ♻" if cache_hit else f"loaded in {load_time:.2f}s"
+                status.update(f"[cyan]Specialist {cache_str} — generating response...")
+                break
+
+    # Stream tokens live with a Live panel
+    with Live(
+        Panel("", title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
+              border_style="green"),
+        console=console,
+        refresh_per_second=15,
+        vertical_overflow="visible"
+    ) as live:
+        for event in stream:
+            if event["type"] == "token":
+                accumulated += event["content"]
+                live.update(
+                    Panel(
+                        accumulated,
+                        title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
+                        border_style="green"
+                    )
+                )
+            elif event["type"] == "done":
+                inference_time = event["inference_time_seconds"]
+                cache_hit = event["cache_hit"]
+                context_turns = event["context_turns"]
+                rewritten_prompt = event.get("rewritten_prompt", rewritten_prompt)
+                # Final update with complete response
+                live.update(
+                    Panel(
+                        event["response"],
+                        title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
+                        border_style="green"
+                    )
+                )
+                break
+
+    # Print metrics and efficiency panel (same as before)
+    console.print(
+        f"\n[dim]Router optimized prompt: {escape(rewritten_prompt[:80])}...[/dim]"
+    )
+    console.print(
+        f"[dim]Metrics: Router: resident (0s) | "
+        f"Specialist Load: {load_time:.2f}s | "
+        f"Inference: {inference_time:.2f}s | "
+        f"Context: {context_turns} turns[/dim]"
+    )
+
+    return event  # return the done event for efficiency panel
+
 def show_availability(router: LLMRouter):
     """Displays a dashboard of which models are already downloaded."""
     from loader.airllm_loader import GGUF_REGISTRY
@@ -125,56 +212,15 @@ def main():
                 if not user_input.strip():
                     continue
                     
-                with console.status("[bold blue]Processing... (Router is persistent, specialist loads on-demand)") as status:
-                    result = router.query(user_input)
+                # Use the new streaming handler by default
+                result = handle_query_streaming(router, user_input, console)
                 
                 if "error" in result:
                     console.print(f"[bold red]Pipeline Error:[/bold red] {result['error']}")
                     continue
                     
                 domain = result["domain"]
-                confidence = result["confidence"]
-                conf_percent = int(confidence * 100)
                 cache_hit = result.get("cache_hit", False)
-                
-                console.print(f"\n[bold cyan]Domain:[/bold cyan] {domain.upper()}")
-                
-                # Confidence bar
-                with Progress(
-                    TextColumn("[bold white]Confidence:"),
-                    BarColumn(bar_width=30, complete_style="cyan", finished_style="bright_cyan"),
-                    TextColumn("{task.percentage:>3.0f}%"),
-                    console=console,
-                    transient=True
-                ) as progress:
-                    task = progress.add_task("Conf", total=100)
-                    progress.update(task, completed=conf_percent)
-
-                # ── Response display ─────────────────────────────────────────
-                if result.get("is_multi_agent"):
-                    domains_used = result.get("domains_used", [])
-                    console.print(
-                        f"\n[bold magenta]Multi-Agent Composition[/bold magenta] — "
-                        f"Domains: [cyan]{' + '.join(d.upper() for d in domains_used)}[/cyan]"
-                    )
-                    for sub in result.get("sub_results", []):
-                        console.print(Panel(
-                            Text(sub["response"], style="white"),
-                            title=f"[bold cyan]{sub['domain'].upper()} Specialist[/bold cyan]",
-                            border_style="cyan"
-                        ))
-                else:
-                    console.print(Panel(
-                        Text(result['response'], style="bold white"),
-                        title=f"[bold green]Response (Specialist: {domain})[/bold green]",
-                        border_style="green"
-                    ))
-                
-                console.print(
-                    f"[dim white]Router optimized prompt: {escape(result['rewritten_prompt'][:100])}...[/dim white]\n"
-                    f"[dim]Metrics: Router: resident (0s) | Specialist Load: {result['specialist_load_time']}s | "
-                    f"Inference: {result['inference_time_seconds']}s | Context: {result.get('context_turns', 0)} turns[/dim]"
-                )
                 
                 # Update session stats
                 session_stats["total_queries"] += 1
