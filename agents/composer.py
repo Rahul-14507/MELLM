@@ -16,14 +16,37 @@ COMPOSITION_SIGNALS = [
 # Presentation order — explanation before implementation before analysis
 PRESENTATION_ORDER = ["general", "medical", "legal", "math", "code"]
 
-# Map domain to the specific task keywords that belong to it
-DOMAIN_TASK_PATTERNS = {
-    "general": ["explain", "what is", "describe", "overview", "concept"],
-    "code": ["give", "write", "implement", "code", "java", "python", "c++"],
-    "math": ["analyse", "analyze", "complexity", "time complexity", 
-             "space complexity", "big o", "proof"],
-    "medical": ["symptoms", "diagnosis", "treatment", "causes"],
-    "legal": ["legal", "law", "rights", "liability"]
+# Domain-specific task extraction patterns
+DOMAIN_EXTRACTION = {
+    "code": {
+        "prefix": "Write clean, well-commented code only. Task: ",
+        "keywords": ["implement", "write", "code", "program", 
+                     "function", "class", "algorithm", "python", 
+                     "java", "javascript", "c++", "script"]
+    },
+    "math": {
+        "prefix": "Provide mathematical analysis only (no code). Topic: ",
+        "keywords": ["solve", "integral", "derivative", "calculate",
+                     "proof", "equation", "complexity", "big o",
+                     "differentiate", "integrate", "eigenvalue"]
+    },
+    "medical": {
+        "prefix": "Provide accurate medical information only. Question: ",
+        "keywords": ["symptoms", "disease", "diabetes", "diagnosis",
+                     "treatment", "medicine", "health", "clinical",
+                     "warning signs", "cancer", "infection"]
+    },
+    "legal": {
+        "prefix": "Provide legal information only. Question: ",
+        "keywords": ["lawsuit", "criminal", "civil", "law", "legal",
+                     "rights", "prosecution", "contract", "arrest",
+                     "habeas", "statute"]
+    },
+    "general": {
+        "prefix": "Provide a clear conceptual explanation only. Topic: ",
+        "keywords": ["explain", "what is", "describe", "history",
+                     "philosophy", "concept", "meaning", "difference between"]
+    }
 }
 
 DOMAIN_FOCUSED_PROMPTS = {
@@ -76,35 +99,26 @@ def detect_domains(user_prompt: str) -> list:
 
 
 def is_multi_domain(user_prompt: str) -> bool:
-    """
-    Returns True only if query genuinely spans multiple domains.
-    Requires BOTH:
-    1. A composition signal word (and, also, plus, etc.)
-    2. Keywords from at least 2 distinct domains present
-    3. Neither domain is 'general' as the sole second domain
-       (general is too broad — almost everything triggers it)
-    """
     prompt_lower = user_prompt.lower()
-    
-    # Must have a composition signal
+
     has_signal = any(signal in prompt_lower for signal in COMPOSITION_SIGNALS)
     if not has_signal:
         return False
-    
-    # Detect which domains have keyword matches
+
     detected = detect_domains(user_prompt)
-    
-    # Filter out 'general' unless it's paired with a truly specific domain
-    # 'general' keywords are too broad and cause false positives
     specific_domains = [d for d in detected if d != "general"]
-    
-    # Need at least 2 specific non-general domains
-    # OR 1 specific domain + general if the signal is very explicit
+
+    # Also check if prompt looks like multiple separate questions
+    # (comma-separated long clauses are a strong signal)
+    comma_clauses = [c.strip() for c in user_prompt.split(",") if len(c.strip()) > 20]
+    has_multiple_clauses = len(comma_clauses) >= 2
+
+    if len(specific_domains) >= 2 and has_multiple_clauses:
+        return True
+
     if len(specific_domains) >= 2:
         return True
-    
-    # Single specific domain + general is NOT multi-agent
-    # e.g. "What is the difference between X and Y" → single domain
+
     return False
 
 
@@ -129,23 +143,46 @@ def decompose_query(user_prompt: str) -> list:
     return sub_tasks
 
 
+def _extract_relevant_subquery(domain: str, original_prompt: str) -> str:
+    """
+    Extracts the sentence or clause most relevant to the given domain
+    from a multi-part prompt. Falls back to the full prompt if extraction fails.
+    """
+    # Split on common multi-query separators
+    separators = [", and ", " and ", ", ", ". ", "? ", "! "]
+    sentences = [original_prompt]
+    for sep in separators:
+        new_sentences = []
+        for s in sentences:
+            new_sentences.extend(s.split(sep))
+        sentences = new_sentences
+
+    sentences = [s.strip().rstrip("?,. ") for s in sentences if len(s.strip()) > 10]
+
+    if not sentences:
+        return original_prompt
+
+    keywords = DOMAIN_EXTRACTION.get(domain, {}).get("keywords", [])
+    
+    # Score each sentence by how many domain keywords it contains
+    best_sentence = None
+    best_score = 0
+
+    for sentence in sentences:
+        sentence_lower = sentence.lower()
+        score = sum(1 for kw in keywords if kw in sentence_lower)
+        if score > best_score:
+            best_score = score
+            best_sentence = sentence
+
+    # If no sentence matched, fall back to full prompt
+    chosen = best_sentence if best_sentence and best_score > 0 else original_prompt
+    prefix = DOMAIN_EXTRACTION.get(domain, {}).get("prefix", "Answer: ")
+    return f"{prefix}{chosen}"
+
+
 def _build_sub_prompt(domain: str, original_prompt: str) -> str:
-    """Builds a tightly focused sub-prompt for a specific domain."""
-    # Extract the core topic by removing domain-signal words
-    topic = original_prompt
-    for signals in DOMAIN_TASK_PATTERNS.values():
-        for signal in signals:
-            topic = topic.lower().replace(signal, "").strip()
-    
-    # Clean up conjunctions left over
-    for word in [" and ", " also ", " plus ", " then ", "  "]:
-        topic = topic.replace(word, " ").strip()
-    
-    prefix = DOMAIN_FOCUSED_PROMPTS.get(
-        domain, 
-        "Answer the following concisely: "
-    )
-    return f"{prefix}{original_prompt}"
+    return _extract_relevant_subquery(domain, original_prompt)
 
 
 def merge_responses(sub_results: list) -> str:

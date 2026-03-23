@@ -22,7 +22,6 @@ from rich.panel import Panel
 
 def handle_query_streaming(router: LLMRouter, user_input: str, console: Console):
     """Handles a query with live streaming token output."""
-    
     domain = "..."
     rewritten_prompt = ""
     load_time = 0.0
@@ -30,78 +29,109 @@ def handle_query_streaming(router: LLMRouter, user_input: str, console: Console)
     cache_hit = False
     context_turns = 0
     accumulated = ""
+    done_event = {
+        "response": "", "domain": domain,
+        "inference_time_seconds": 0.0, "cache_hit": False,
+        "context_turns": 0, "rewritten_prompt": "",
+        "specialist_load_time": 0.0,
+    }
 
-    with console.status(
-        "[cyan]Processing... (Router is persistent, specialist loads on-demand)",
-        spinner="dots"
-    ) as status:
-        stream = router.stream_query(user_input)
-        
-        # Process routing event
-        for event in stream:
-            if event["type"] == "routing":
-                domain = event["domain"]
-                rewritten_prompt = event.get("rewritten_prompt", "")
-                if event.get("is_multi_agent"):
-                    status.update("[cyan]Multi-agent composition — routing to specialists...")
-                else:
-                    status.update(f"[cyan]Routed to [bold]{domain.upper()}[/bold] — loading specialist...")
-                break
+    stream = router.stream_query(user_input)
+    event = None  # Initialize to prevent UnboundLocalError
 
-        # Process loaded event
-        for event in stream:
-            if event["type"] == "loaded":
-                load_time = event["load_time"]
-                cache_hit = event["cache_hit"]
-                cache_str = "HOT ♻" if cache_hit else f"loaded in {load_time:.2f}s"
-                status.update(f"[cyan]Specialist {cache_str} — generating response...")
-                break
+    try:
+        # ── Phase 1: spin a status spinner during routing and model loading ─────────
+        with console.status(
+            "[cyan]Processing... (Router is persistent, specialist loads on-demand)",
+            spinner="dots"
+        ) as status:
+            for event in stream:
+                etype = event["type"]
 
-    # Stream tokens live with a Live panel
-    with Live(
-        Panel("", title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
-              border_style="green"),
-        console=console,
-        refresh_per_second=15,
-        vertical_overflow="visible"
-    ) as live:
-        for event in stream:
+                if etype == "routing":
+                    domain = event.get("domain", domain)
+                    rewritten_prompt = event.get("rewritten_prompt", "")
+                    if event.get("is_multi_agent"):
+                        status.update("[cyan]Multi-agent composition — routing to specialists...")
+                    else:
+                        status.update(
+                            f"[cyan]Routed to [bold]{domain.upper()}[/bold] — loading specialist..."
+                        )
+
+                elif etype == "loaded":
+                    load_time = event["load_time"]
+                    cache_hit = event["cache_hit"]
+                    cache_str = "HOT ♻" if cache_hit else f"loaded in {load_time:.2f}s"
+                    status.update(f"[cyan]Specialist {cache_str} — generating response...")
+
+                elif etype in ("token", "done"):
+                    # Hand off to the Live streaming phase
+                    break
+
+        if event is None:
+            console.print("[bold red]Error:[/bold red] Stream ended unexpectedly without yields.")
+            return done_event
+
+        # ── Phase 2: display tokens live (or full response for multi-agent) ─────────
+        with Live(
+            Panel("", title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
+                  border_style="green"),
+            console=console,
+            refresh_per_second=15,
+            vertical_overflow="visible"
+        ) as live:
+            # Handle the event that broke us out of Phase 1 first
             if event["type"] == "token":
                 accumulated += event["content"]
-                live.update(
-                    Panel(
+                live.update(Panel(
+                    accumulated,
+                    title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
+                    border_style="green"
+                ))
+
+            elif event["type"] == "done":
+                done_event = event
+                accumulated = event.get("response", "")
+                live.update(Panel(
+                    accumulated,
+                    title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
+                    border_style="green"
+                ))
+
+            # Continue consuming remaining stream events
+            for event in stream:
+                if event["type"] == "token":
+                    accumulated += event["content"]
+                    live.update(Panel(
                         accumulated,
                         title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
                         border_style="green"
-                    )
-                )
-            elif event["type"] == "done":
-                inference_time = event["inference_time_seconds"]
-                cache_hit = event["cache_hit"]
-                context_turns = event["context_turns"]
-                rewritten_prompt = event.get("rewritten_prompt", rewritten_prompt)
-                # Final update with complete response
-                live.update(
-                    Panel(
+                    ))
+                elif event["type"] == "done":
+                    done_event = event
+                    inference_time = event.get("inference_time_seconds", 0.0)
+                    cache_hit = event.get("cache_hit", False)
+                    context_turns = event.get("context_turns", 0)
+                    rewritten_prompt = event.get("rewritten_prompt", rewritten_prompt)
+                    domain = event.get("domain", domain)
+                    live.update(Panel(
                         event["response"],
                         title=f"[bold]Response (Specialist: {domain.lower()})[/bold]",
                         border_style="green"
-                    )
-                )
-                break
+                    ))
+                    break
+    except Exception as e:
+        console.print(f"[bold red]Streaming Error:[/bold red] {e}")
+        return done_event
 
-    # Print metrics and efficiency panel (same as before)
     console.print(
-        f"\n[dim]Router optimized prompt: {escape(rewritten_prompt[:80])}...[/dim]"
-    )
-    console.print(
+        f"\n[dim]Router optimized prompt: {escape(rewritten_prompt[:80])}...[/dim]\n"
         f"[dim]Metrics: Router: resident (0s) | "
         f"Specialist Load: {load_time:.2f}s | "
         f"Inference: {inference_time:.2f}s | "
         f"Context: {context_turns} turns[/dim]"
     )
-
-    return event  # return the done event for efficiency panel
+    return done_event
 
 def show_availability(router: LLMRouter):
     """Displays a dashboard of which models are already downloaded."""
@@ -151,12 +181,28 @@ def main():
     
     parser = argparse.ArgumentParser(description="MELLM - LLM Router CLI")
     parser.add_argument("--preload", type=str, help="Preload a specific domain model or 'all'")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Launch the web UI instead of the CLI"
+    )
     args = parser.parse_args()
 
     try:
         # Initialize router — router model loads here and stays resident
         with console.status("[cyan]Loading router model (persistent)...[/cyan]"):
             router = LLMRouter(config_path=config_path)
+
+        if args.web:
+            import uvicorn
+            from api import app, set_router
+            set_router(router)  # inject the already-loaded router into the API
+            console.print("\n[bold cyan]Web UI starting...[/bold cyan]")
+            console.print("[dim]Open http://localhost:8000 in your browser[/dim]\n")
+            import webbrowser, threading
+            threading.Timer(1.5, lambda: webbrowser.open("http://localhost:8000")).start()
+            uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+            return
             
         if args.preload:
             specialists = router.config["specialists"]

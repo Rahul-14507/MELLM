@@ -23,7 +23,7 @@ MELLM_BANNER = """
 """
 
 SUBTITLE = "Multi-Expert Large Language Model Router"
-VERSION  = "v0.3.1"
+VERSION  = "v0.5.0"
 TAGLINE  = "Consumer-Hardware MoE Orchestration · Run specialist LLMs locally"
 
 DOMAIN_MODEL_OPTIONS = {

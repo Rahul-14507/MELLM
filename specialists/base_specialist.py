@@ -31,7 +31,8 @@ class BaseSpecialist(ABC):
             messages=[{"role": "user", "content": prompt}],
             max_tokens=self.max_new_tokens,
             temperature=self._get_temperature(),
-            stream=True
+            stream=True,
+            stop=["</s>", "<|endoftext|>", "<|im_end|>", "\n\n\n\n"]
         )
         for chunk in stream:
             delta = chunk.get("choices", [{}])[0].get("delta", {})

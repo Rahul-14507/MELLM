@@ -10,7 +10,7 @@ from orchestrator import LLMRouter
 app = FastAPI(
     title="MELLM API",
     description="Multi-Expert LLM Router — route queries to specialist models",
-    version="0.3.0"
+    version="0.5.0"
 )
 
 app.add_middleware(
@@ -20,10 +20,22 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+from fastapi.responses import StreamingResponse, FileResponse
+import json
+
 # Single router instance shared across all requests
-# Preference chain: user_config.yaml > config.yaml
-config_path = "user_config.yaml" if Path("user_config.yaml").exists() else "config.yaml"
-router = LLMRouter(config_path=config_path)
+_router_instance: LLMRouter | None = None
+
+def set_router(r: LLMRouter):
+    global _router_instance
+    _router_instance = r
+
+def get_router() -> LLMRouter:
+    global _router_instance
+    if _router_instance is None:
+        config_path = "user_config.yaml" if Path("user_config.yaml").exists() else "config.yaml"
+        _router_instance = LLMRouter(config_path=config_path)
+    return _router_instance
 
 class QueryRequest(BaseModel):
     prompt: str
@@ -48,14 +60,15 @@ class QueryResponse(BaseModel):
     domains_used: Optional[List[str]] = None
     sub_results: Optional[List[SubResult]] = None
 
-from fastapi.responses import StreamingResponse
-import json
+@app.get("/")
+async def serve_ui():
+    return FileResponse(Path(__file__).parent / "webui" / "index.html")
 
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     try:
-        # Note: LLMRouter.query currently doesn't use domain_hint, but we could add it.
-        result = router.query(request.prompt)
+        r = get_router()
+        result = r.query(request.prompt)
         return QueryResponse(
             domain=result["domain"],
             response=result["response"],
@@ -76,21 +89,11 @@ async def query(request: QueryRequest):
 async def query_stream(request: QueryRequest):
     """
     Streaming version of /query. Returns Server-Sent Events.
-    Each event is a JSON object with a 'type' field:
-    - {"type": "routing", "domain": "...", ...}
-    - {"type": "loaded", "load_time": 1.2, "cache_hit": false}
-    - {"type": "token", "content": "..."}
-    - {"type": "done", "response": "...", ...}
-    
-    Usage with curl:
-    curl -X POST http://localhost:8000/query/stream \
-      -H "Content-Type: application/json" \
-      -d '{"prompt": "Binary search in Java"}' \
-      --no-buffer
     """
     def generate():
         try:
-            for event in router.stream_query(request.prompt):
+            r = get_router()
+            for event in r.stream_query(request.prompt):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -104,21 +107,40 @@ async def query_stream(request: QueryRequest):
         }
     )
 
-@app.delete("/context")
-async def clear_context():
-    router.conversation_history.clear()
-    return {"status": "Context cleared"}
-
 @app.get("/status")
 async def status():
+    from loader.airllm_loader import GGUF_REGISTRY
+    r = get_router()
+    specialists = {}
+    for domain, spec in r.config["specialists"].items():
+        model_id = spec["model_id"]
+        gguf_file = GGUF_REGISTRY.get(model_id, ("", "unknown"))[1]
+        cached = (r.loader.cache_dir / gguf_file).exists()
+        active = r.last_domain == domain
+        specialists[domain] = {
+            "model_id": model_id,
+            "gguf_file": gguf_file,
+            "cached": cached,
+            "active": active,
+        }
     return {
-        "status": "running",
-        "version": "0.3.0",
-        "active_domain": router.last_domain,
-        "context_turns": len(router.conversation_history),
-        "session_stats": router.session_stats,
-        "domains": list(router.config["specialists"].keys())
+        "version": "0.5.0",
+        "active_domain": r.last_domain,
+        "context_turns": len(r.conversation_history),
+        "max_history": r.max_history,
+        "session_stats": r.session_stats,
+        "domain_streak": r.domain_streak[-5:],
+        "specialists": specialists,
+        "router": {
+            "model_id": r.config["router"]["model_id"],
+            "loaded": True
+        }
     }
+
+@app.delete("/context")
+async def clear_context():
+    get_router().conversation_history.clear()
+    return {"status": "cleared"}
 
 @app.get("/health")
 async def health():
@@ -126,7 +148,7 @@ async def health():
 
 @app.on_event("shutdown")
 def shutdown_event():
-    router.shutdown()
+    get_router().shutdown()
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)

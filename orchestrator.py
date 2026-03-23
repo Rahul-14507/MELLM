@@ -1,4 +1,5 @@
 import time
+import re
 from typing import Generator
 from dotenv import load_dotenv
 load_dotenv()
@@ -143,15 +144,67 @@ class LLMRouter:
 
         return domain
 
+    def _decompose_with_router(self, user_prompt: str) -> list:
+        """
+        Splits a multi-domain prompt and classifies each part using the router LLM.
+        Returns a list of sub-tasks for orchestration.
+        """
+        # Split the prompt into individual questions using regex
+        parts = re.split(
+            r',\s*(?:and\s+)?(?=(?:what|how|why|explain|implement|write|'
+            r'solve|prove|find|describe|give|show)[^,]*)',
+            user_prompt,
+            flags=re.IGNORECASE
+        )
+        parts = [p.strip().rstrip("?,. ") for p in parts if len(p.strip()) > 15]
+
+        # If splitting failed, fall back to simple keyword-based decompose
+        if len(parts) < 2:
+            from agents.composer import decompose_query
+            return decompose_query(user_prompt)
+
+        # Classify each part using the router LLM — same as single-domain routing
+        sub_tasks = []
+        seen_domains = []
+        for part in parts:
+            try:
+                # Get optimized sub-prompt directly from router classification
+                decision = self.router_logic.classify(
+                    self.router_model, None, part
+                )
+                domain = decision.get("domain", "general")
+                confidence = decision.get("confidence", 0.0)
+                
+                if confidence < 0.6:
+                    domain = "general"
+                
+                # Deduplicate — don't run the same domain twice for efficiency
+                if domain not in seen_domains:
+                    seen_domains.append(domain)
+                    sub_tasks.append({
+                        "domain": domain,
+                        "sub_prompt": part,
+                        "rewritten_prompt": decision.get("rewritten_prompt", part)
+                    })
+            except Exception as e:
+                logger.warning(f"Router failed on sub-query '{part[:30]}...': {e}")
+                sub_tasks.append({
+                    "domain": "general",
+                    "sub_prompt": part,
+                    "rewritten_prompt": part
+                })
+        
+        return sub_tasks
+
     # ─── Multi-Agent Composition ───────────────────────────────────────────────
 
     def _run_multi_agent(self, user_prompt: str) -> dict:
         """
-        Decomposes a multi-domain query, routes each part to the appropriate
-        specialist sequentially, and merges the results into one response.
+        Decomposes a multi-domain query using the router, routes each part 
+        to the appropriate specialist sequentially, and merges the results.
         """
-        logger.info("Multi-domain query detected — activating composer...")
-        sub_tasks = decompose_query(user_prompt)
+        logger.info("Multi-domain query detected — activating router-based composer...")
+        sub_tasks = self._decompose_with_router(user_prompt)
         logger.info(f"Decomposed into {len(sub_tasks)} sub-tasks: {[t['domain'] for t in sub_tasks]}")
 
         sub_results = []
@@ -162,7 +215,8 @@ class LLMRouter:
         for task in sub_tasks:
             try:
                 domain = task["domain"]
-                sub_prompt = task["sub_prompt"]
+                # Use rewritten sub-prompt from router if available
+                sub_prompt = task.get("rewritten_prompt", task["sub_prompt"])
                 domains_used.append(domain)
 
                 specialist_config = self.config["specialists"][domain]
@@ -203,11 +257,10 @@ class LLMRouter:
                 response = specialist.generate(sub_prompt)
                 total_inference_time += time.time() - inf_start
 
-                sub_results.append({
-                    "domain": domain,
-                    "sub_prompt": sub_prompt,
-                    "response": response
-                })
+                domain = task["domain"]
+                # Use rewritten sub-prompt from router if available
+                sub_prompt = task.get("rewritten_prompt", task["sub_prompt"])
+                domains_used.append(domain)
                 logger.info(f"[Composer] {domain} specialist done.")
 
             except Exception as e:
@@ -253,31 +306,107 @@ class LLMRouter:
     def stream_query(self, user_prompt: str) -> Generator[dict, None, None]:
         """
         Streaming version of query(). 
-        First yields {"type": "routing", ...} with domain info,
-        then yields {"type": "token", "content": "..."} for each token,
-        finally yields {"type": "done", ...} with full metrics.
+        Yields event dictionaries: 'routing', 'loaded', 'token' (multiple), 'done'.
         """
-        import time
-
         self.session_stats["total_queries"] += 1
 
-        # Check for multi-domain — fall back to non-streaming for composer
         if is_multi_domain(user_prompt):
-            result = self._run_multi_agent(user_prompt)
-            yield {"type": "routing", "domain": result["domain"], 
-                   "rewritten_prompt": result["rewritten_prompt"],
-                   "is_multi_agent": True}
-            yield {"type": "token", "content": result["response"]}
-            yield {"type": "done", **result}
+            yield from self._stream_multi_agent(user_prompt)
+        else:
+            yield from self._stream_single_agent(user_prompt)
+
+    def _stream_multi_agent(self, user_prompt: str) -> Generator[dict, None, None]:
+        """Handles multi-domain queries by decomposing into parallel specialist tasks."""
+        yield {"type": "routing", "domain": "MULTI-AGENT",
+               "rewritten_prompt": "[Multi-agent composition]",
+               "confidence": 1.0, "is_multi_agent": True}
+        
+        sub_tasks = self._decompose_with_router(user_prompt)
+        
+        if not sub_tasks:
+            yield from self._stream_single_agent(user_prompt)
             return
 
-        # Build contextual prompt
-        contextual_prompt = self._build_contextual_prompt(user_prompt)
+        domains_used = [t["domain"] for t in sub_tasks]
+        yield {"type": "multi_agent_start", "domains": domains_used,
+               "total": len(sub_tasks)}
+        
+        all_sub_results = []
+        total_load = 0.0
+        total_inference = 0.0
+        
+        for i, task in enumerate(sub_tasks):
+            domain = task["domain"]
+            sub_prompt = task.get("rewritten_prompt", task["sub_prompt"])
+            
+            yield {"type": "sub_agent_start", "domain": domain,
+                   "index": i, "total": len(sub_tasks)}
+            
+            # Load specialist
+            specialist_config = self.config["specialists"][domain]
+            specialist_model_id = specialist_config["model_id"]
+            
+            if self.last_domain == domain and self.last_model is not None:
+                model = self.last_model
+                load_t = 0.0
+            else:
+                if self.last_domain is not None and self.last_model is not None:
+                    self.loader.unload(self.config["specialists"][self.last_domain]["model_id"])
+                
+                start = time.time()
+                model, _, _ = self.loader.get(specialist_model_id)
+                load_t = time.time() - start
+                self.last_domain = domain
+                self.last_model = model
+            
+            total_load += load_t
+            yield {"type": "sub_agent_loaded", "domain": domain, "load_time": load_t}
+            
+            # Stream this specialist's tokens
+            specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
+            specialist = specialist_cls(
+                model=model,
+                max_new_tokens=min(specialist_config.get("max_new_tokens", 512), 600)
+            )
+            
+            sub_response = ""
+            inf_start = time.time()
+            for token in specialist.stream_generate(sub_prompt):
+                sub_response += token
+                yield {"type": "sub_agent_token", "domain": domain,
+                       "index": i, "content": token}
+            
+            inf_time = time.time() - inf_start
+            total_inference += inf_time
+            all_sub_results.append({"domain": domain, "sub_prompt": sub_prompt, "response": sub_response})
+            yield {"type": "sub_agent_done", "domain": domain, "index": i, "inference_time": round(inf_time, 2)}
+        
+        merged = merge_responses(all_sub_results)
+        self.conversation_history.append({"prompt": user_prompt, "domain": "multi-agent", "response": merged})
+        if len(self.conversation_history) > self.max_history:
+            self.conversation_history = self.conversation_history[-self.max_history:]
+            
+        yield {
+            "type": "done",
+            "original_prompt": user_prompt,
+            "domain": "MULTI-AGENT",
+            "domains_used": domains_used,
+            "confidence": 1.0,
+            "rewritten_prompt": f"[Composed: {' + '.join(d.upper() for d in domains_used)}]",
+            "response": merged,
+            "router_load_time": 0.0,
+            "specialist_load_time": round(total_load, 2),
+            "inference_time_seconds": round(total_inference, 2),
+            "cache_hit": False,
+            "context_turns": len(self.conversation_history),
+            "is_multi_agent": True,
+            "sub_results": all_sub_results
+        }
 
-        # Route with persistent router
-        decision = self.router_logic.classify(
-            self.router_model, None, contextual_prompt
-        )
+    def _stream_single_agent(self, user_prompt: str) -> Generator[dict, None, None]:
+        """Standard single-domain query streaming pipeline."""
+        contextual_prompt = self._build_contextual_prompt(user_prompt)
+        decision = self.router_logic.classify(self.router_model, None, contextual_prompt)
         domain = decision["domain"]
         confidence = decision["confidence"]
         rewritten_prompt = decision["rewritten_prompt"]
@@ -289,13 +418,10 @@ class LLMRouter:
         domain = self._apply_domain_continuity(domain, user_prompt)
         self.domain_streak.append(domain)
 
-        # Signal routing decision to caller immediately
         yield {"type": "routing", "domain": domain,
                "rewritten_prompt": rewritten_prompt,
-               "confidence": confidence,
-               "is_multi_agent": False}
+               "confidence": confidence, "is_multi_agent": False}
 
-        # Load specialist (hot cache or fresh)
         specialist_config = self.config["specialists"][domain]
         specialist_model_id = specialist_config["model_id"]
         spec_load_time = 0.0
@@ -308,7 +434,6 @@ class LLMRouter:
         else:
             if self.last_domain is not None and self.last_model is not None:
                 prev_model_id = self.config["specialists"][self.last_domain]["model_id"]
-                # CRITICAL: Clear reference before unloading to allow GC
                 self.last_model = None
                 import gc
                 gc.collect()
@@ -320,37 +445,23 @@ class LLMRouter:
             self.last_domain = domain
             self.last_model = model
 
-        # Signal load complete
-        yield {"type": "loaded", "load_time": round(spec_load_time, 2),
-               "cache_hit": cache_hit}
+        yield {"type": "loaded", "load_time": round(spec_load_time, 2), "cache_hit": cache_hit}
 
-        # Stream tokens
         specialist_cls = self.SPECIALIST_MAP.get(domain, GeneralSpecialist)
-        specialist = specialist_cls(
-            model=model,
-            max_new_tokens=specialist_config.get("max_new_tokens", 512)
-        )
-
+        specialist = specialist_cls(model=model, max_new_tokens=specialist_config.get("max_new_tokens", 512))
+        
         specialist_prompt = self._build_specialist_prompt(rewritten_prompt)
         full_response = ""
         inference_start = time.time()
-
         for token in specialist.stream_generate(specialist_prompt):
             full_response += token
             yield {"type": "token", "content": token}
 
         inference_time = time.time() - inference_start
-
-        # Update conversation history
-        self.conversation_history.append({
-            "prompt": user_prompt,
-            "domain": domain,
-            "response": full_response
-        })
+        self.conversation_history.append({"prompt": user_prompt, "domain": domain, "response": full_response})
         if len(self.conversation_history) > self.max_history:
             self.conversation_history = self.conversation_history[-self.max_history:]
 
-        # Final done signal with full metrics
         yield {
             "type": "done",
             "original_prompt": user_prompt,
@@ -364,6 +475,7 @@ class LLMRouter:
             "cache_hit": cache_hit,
             "context_turns": len(self.conversation_history),
         }
+
 
     def query(self, user_prompt: str) -> dict:
         """

@@ -194,6 +194,9 @@ MELLM/
 │   ├── classifier.py         # LLM-based query classifier (JSON output mode)
 │   └── prompt_optimizer.py   # Rule-based fallback prompt templates
 │
+├── webui/
+│   └── index.html            # Single-file web UI (served by FastAPI at /)
+│
 └── specialists/
     ├── __init__.py
     ├── base_specialist.py    # Abstract base class for all specialists
@@ -289,9 +292,19 @@ python cli.py --preload all
 # Pre-download a specific domain
 python cli.py --preload medical
 
-# REST API mode
-python api.py
+# Web UI Mode
+python cli.py --web
+# Opens http://localhost:8000 in your browser automatically
 ```
+
+**Interactive Web Features:**
+- **Live Streaming**: Tokens appear instantly with polished animations.
+- **Expert Panels**: Multi-agent results stream into dedicated parallel panels.
+- **Domain Indicators**: Visual badges identify which specialist is responding.
+- **Stop Generation**: Interrupt long responses instantly with the "Stop" button.
+- **One-Click Regenerate**: Easily retry any query to get a fresh response.
+- **Robust Code Rendering**: Proper syntax highlighting with headers and one-click "Copy" buttons.
+- **Session Dashboard**: Live sidebar showing VRAM status, cache hits, and time saved.
 
 ---
 
@@ -733,7 +746,7 @@ specialists:
 - [x] Domain-aware session history (streak display)
 - [x] Interactive setup wizard with hardware detection
 - [x] FastAPI REST endpoint
-- [ ] Web UI (Gradio/Streamlit)
+- [x] Web UI
 - [x] Evaluation benchmark suite for routing accuracy
 - [x] Streaming token output
 - [ ] Docker container for easy deployment
