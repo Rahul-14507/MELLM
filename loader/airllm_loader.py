@@ -131,6 +131,91 @@ class ModelLoader:
         tmp_path.rename(dest_path)
         logger.info(f"Saved to: {dest_path}")
 
+    def stream_download(self, model_id: str):
+        """Yields download progress events for the API."""
+        if model_id not in self.registry:
+            yield {"status": "error", "message": f"Model {model_id} not in registry"}
+            return
+
+        repo_id, filename = self.registry[model_id]
+        dest_path = self.cache_dir / filename
+
+        if dest_path.exists():
+            yield {"status": "complete", "message": "File already exists"}
+            return
+
+        import requests
+        from huggingface_hub import hf_hub_url
+        from huggingface_hub.utils import build_hf_headers
+        import os
+
+        url = hf_hub_url(repo_id=repo_id, filename=filename)
+        headers = build_hf_headers(token=os.environ.get("HF_TOKEN"))
+
+        try:
+            response = requests.get(url, headers=headers, stream=True, allow_redirects=True)
+            response.raise_for_status()
+        except Exception as e:
+            yield {"status": "error", "message": str(e)}
+            return
+
+        total_size = int(response.headers.get("content-length", 0))
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_suffix(".tmp")
+
+        downloaded = 0
+        last_yield_time = time.time()
+
+        yield {"status": "start", "total_size": total_size, "filename": filename}
+
+        try:
+            with open(tmp_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024 * 512): # 512KB chunks
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        # Throttle events to roughly 10Hz to prevent overwhelming the SSE stream
+                        current_time = time.time()
+                        if current_time - last_yield_time >= 0.1:
+                            yield {
+                                "status": "progress",
+                                "downloaded": downloaded,
+                                "total_size": total_size,
+                                "percentage": round((downloaded / total_size) * 100, 1) if total_size else 0
+                            }
+                            last_yield_time = current_time
+
+            tmp_path.rename(dest_path)
+            yield {"status": "complete"}
+            logger.info(f"Stream download completed for {model_id}")
+
+        except Exception as e:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            yield {"status": "error", "message": f"Download failed: {e}"}
+
+    def delete_model(self, model_id: str) -> bool:
+        """Deletes the cached GGUF file for a given model ID."""
+        if model_id not in self.registry:
+            return False
+
+        _, filename = self.registry[model_id]
+        dest_path = self.cache_dir / filename
+
+        # First, ensure it's not currently loaded in VRAM
+        self.unload(model_id)
+
+        if dest_path.exists():
+            try:
+                dest_path.unlink()
+                logger.info(f"Deleted cached model file: {dest_path}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete {dest_path}: {e}")
+                return False
+        return True # Considered success if it's already gone
+
     def get(self, model_id: str, is_router: bool = False):
         """
         Loads and returns a Llama model instance.

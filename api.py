@@ -115,13 +115,21 @@ async def status():
     for domain, spec in r.config["specialists"].items():
         model_id = spec["model_id"]
         gguf_file = GGUF_REGISTRY.get(model_id, ("", "unknown"))[1]
-        cached = (r.loader.cache_dir / gguf_file).exists()
+        
+        # Calculate size in GB if cached
+        cache_path = r.loader.cache_dir / gguf_file
+        cached = cache_path.exists()
+        size_gb = -1
+        if cached:
+            size_gb = round(os.path.getsize(cache_path) / (1024 * 1024 * 1024), 2)
+            
         active = r.last_domain == domain
         specialists[domain] = {
             "model_id": model_id,
             "gguf_file": gguf_file,
             "cached": cached,
             "active": active,
+            "size_gb": size_gb
         }
     return {
         "version": "0.5.0",
@@ -137,7 +145,47 @@ async def status():
         }
     }
 
-@app.delete("/context")
+@app.post("/models/{domain}/download")
+async def download_model(domain: str):
+    """Streams download progress for a specialist model via SSE."""
+    r = get_router()
+    if domain not in r.config["specialists"]:
+        raise HTTPException(status_code=404, detail=f"Domain {domain} not found in config")
+        
+    model_id = r.config["specialists"][domain]["model_id"]
+
+    def generate():
+        for event in r.loader.stream_download(model_id):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@app.delete("/models/{domain}")
+async def delete_model(domain: str):
+    """Deletes a cached specialist model."""
+    r = get_router()
+    if domain not in r.config["specialists"]:
+        raise HTTPException(status_code=404, detail=f"Domain {domain} not found in config")
+        
+    model_id = r.config["specialists"][domain]["model_id"]
+    success = r.loader.delete_model(model_id)
+    
+    if success:
+        # If we just deleted the active domain, clear router state
+        if r.last_domain == domain:
+            r.last_domain = None
+            r.last_model = None
+        return {"status": "success", "message": f"Deleted {model_id}"}
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to delete {model_id}")
+
 async def clear_context():
     get_router().conversation_history.clear()
     return {"status": "cleared"}

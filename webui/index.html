@@ -68,22 +68,114 @@
             margin-top: 24px;
         }
 
-        .specialist-list { display: flex; flex-direction: column; gap: 10px; }
-        .specialist-item {
+        .specialist-list { display: flex; flex-direction: column; gap: 12px; }
+        
+        .specialist-card {
+            background: #1e1e1e;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            transition: all 0.2s ease;
+        }
+        
+        .specialist-card.active {
+            border-color: var(--accent);
+            box-shadow: 0 0 10px rgba(0, 188, 212, 0.1);
+        }
+
+        .specialist-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .specialist-domain {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: capitalize;
+            color: #fff;
             display: flex;
             align-items: center;
-            gap: 10px;
-            font-size: 13px;
+            gap: 6px;
         }
-        .status-dot {
+
+        .domain-indicator {
             width: 8px;
             height: 8px;
             border-radius: 50%;
             background: #444;
         }
-        .status-dot.active { background: #4caf50; box-shadow: 0 0 8px #4caf50; }
-        .status-dot.cached { background: #fbc02d; }
-        .status-dot.none { background: #444; }
+
+        .specialist-model {
+            font-size: 11px;
+            color: var(--text-dim);
+            font-family: monospace;
+            word-break: break-all;
+        }
+
+        .specialist-actions {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 4px;
+        }
+
+        .specialist-size {
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+
+        .action-btn {
+            background: transparent;
+            border: 1px solid #444;
+            color: var(--text-dim);
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .action-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .action-btn.delete:hover { border-color: #ef4444; color: #ef4444; }
+        .action-btn:disabled { opacity: 0.5; cursor: not-allowed; border-color: #444 !important; color: var(--text-dim) !important; }
+
+        .download-progress-container {
+            width: 100%;
+            background: #2a2a2a;
+            border-radius: 4px;
+            height: 14px;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid #333;
+            margin-top: 8px;
+            display: none;
+        }
+
+        .download-progress-bar {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.2s ease-out;
+        }
+
+        .download-progress-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            font-size: 9px;
+            top: 0;
+            line-height: 14px;
+            color: #fff;
+            font-weight: bold;
+            text-shadow: 0 0 2px rgba(0,0,0,0.8);
+        }
 
         .stats-grid {
             display: grid;
@@ -472,6 +564,8 @@
     <script>
         // 1. API Client
         const API = {
+            activeDownloads: new Set(),
+            
             async streamQuery(prompt, callbacks, signal) {
                 const {onRouting, onLoaded, onToken, onMultiAgentStart, onSubAgentStart, onSubAgentLoaded, onSubAgentToken, onSubAgentDone, onDone, onError} = callbacks;
                 try {
@@ -668,17 +762,99 @@
 
             updateSidebar(status) {
                 const list = document.getElementById('specialist-status');
-                list.innerHTML = '';
-                
-                for (const [domain, info] of Object.entries(status.specialists)) {
-                    const item = document.createElement('div');
-                    item.className = 'specialist-item';
-                    const state = info.active ? 'active' : (info.cached ? 'cached' : 'none');
-                    item.innerHTML = `
-                        <div class="status-dot ${state}"></div>
-                        <span>${domain.charAt(0).toUpperCase() + domain.slice(1)}</span>
-                    `;
-                    list.appendChild(item);
+                // Only full re-render if we don't have cards yet or if the number of domains changed
+                if (list.children.length === 0 || list.children.length !== Object.keys(status.specialists).length) {
+                    list.innerHTML = '';
+                    for (const [domain, info] of Object.entries(status.specialists)) {
+                        const card = document.createElement('div');
+                        card.className = `specialist-card ${info.active ? 'active' : ''}`;
+                        card.id = `card-${domain}`;
+                        
+                        const isDownloading = API.activeDownloads.has(domain);
+                        
+                        let actionsHtml = '';
+                        if (isDownloading) {
+                            actionsHtml = `
+                                <div class="download-progress-container" id="progress-container-${domain}" style="display: block;">
+                                    <div class="download-progress-bar" id="progress-bar-${domain}" style="width: 0%"></div>
+                                    <div class="download-progress-text" id="progress-text-${domain}">Starting...</div>
+                                </div>
+                            `;
+                        } else if (info.cached) {
+                            actionsHtml = `
+                                <div class="specialist-actions" id="actions-${domain}">
+                                    <span class="specialist-size">${info.size_gb > 0 ? info.size_gb + ' GB' : ''}</span>
+                                    <button class="action-btn delete" onclick="UI.deleteModel('${domain}', event)" title="Delete Model">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                                    </button>
+                                </div>
+                            `;
+                        } else {
+                            actionsHtml = `
+                                <div class="specialist-actions" id="actions-${domain}">
+                                    <span class="specialist-size">Not Downloaded</span>
+                                    <button class="action-btn" onclick="UI.downloadModel('${domain}', event)" title="Download Model">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    </button>
+                                </div>
+                                <div class="download-progress-container" id="progress-container-${domain}">
+                                    <div class="download-progress-bar" id="progress-bar-${domain}"></div>
+                                    <div class="download-progress-text" id="progress-text-${domain}">0%</div>
+                                </div>
+                            `;
+                        }
+
+                        card.innerHTML = `
+                            <div class="specialist-card-header">
+                                <span class="specialist-domain">
+                                    <div class="domain-indicator tooltip" style="background: var(--color-${domain});">
+                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="3" style="margin-left: -1px; margin-top: -1px; opacity: ${info.active ? 1 : 0};"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                    </div>
+                                    ${domain}
+                                </span>
+                            </div>
+                            <div class="specialist-model" title="${info.gguf_file}">${info.model_id.split('/').pop()}</div>
+                            ${actionsHtml}
+                        `;
+                        list.appendChild(card);
+                    }
+                } else {
+                    // Fast update existing cards
+                    for (const [domain, info] of Object.entries(status.specialists)) {
+                        const card = document.getElementById(`card-${domain}`);
+                        if (card) {
+                            if (info.active) card.classList.add('active');
+                            else card.classList.remove('active');
+                            
+                            const indicatorSvg = card.querySelector('.domain-indicator svg');
+                            if(indicatorSvg) indicatorSvg.style.opacity = info.active ? 1 : 0;
+                            
+                            // Only update actions if not actively downloading to prevent UI flicker
+                            if (!API.activeDownloads.has(domain)) {
+                                const isCached = info.cached;
+                                const actionsEl = document.getElementById(`actions-${domain}`);
+                                if (actionsEl) {
+                                    if (isCached && actionsEl.querySelector('.delete') == null) {
+                                        // Need to switch to delete state
+                                        actionsEl.innerHTML = `
+                                            <span class="specialist-size">${info.size_gb > 0 ? info.size_gb + ' GB' : ''}</span>
+                                            <button class="action-btn delete" onclick="UI.deleteModel('${domain}', event)" title="Delete Model">
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                                            </button>
+                                        `;
+                                    } else if (!isCached && actionsEl.querySelector('.delete') != null) {
+                                        // Need to switch to download state
+                                        actionsEl.innerHTML = `
+                                            <span class="specialist-size">Not Downloaded</span>
+                                            <button class="action-btn" onclick="UI.downloadModel('${domain}', event)" title="Download Model">
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                            </button>
+                                        `;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 document.getElementById('stat-queries').textContent = status.session_stats.total_queries;
@@ -688,8 +864,102 @@
                 document.getElementById('stat-context').textContent = `${status.context_turns}/${status.max_history}`;
             },
 
+
             scrollToBottom() {
                 this.container.scrollTop = this.container.scrollHeight;
+            },
+
+            async deleteModel(domain, event) {
+                if (event) {
+                    event.stopPropagation();
+                    const btn = event.currentTarget;
+                    btn.disabled = true;
+                    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg>';
+                }
+
+                try {
+                    const response = await fetch(`/models/${domain}`, { method: 'DELETE' });
+                    if (response.ok) {
+                        API.pollStatus(); // Refresh UI
+                    } else {
+                        const err = await response.json();
+                        alert(`Failed to delete model: ${err.detail}`);
+                    }
+                } catch (error) {
+                    console.error('Delete error:', error);
+                    alert(`Failed to delete model: ${error.message}`);
+                }
+            },
+
+            downloadModel(domain, event) {
+                if (event) {
+                    event.stopPropagation();
+                }
+                
+                // Set UI state
+                API.activeDownloads.add(domain);
+                const actionsEl = document.getElementById(`actions-${domain}`);
+                const progressContainer = document.getElementById(`progress-container-${domain}`);
+                const progressBar = document.getElementById(`progress-bar-${domain}`);
+                const progressText = document.getElementById(`progress-text-${domain}`);
+                
+                if (actionsEl) actionsEl.style.display = 'none';
+                if (progressContainer) progressContainer.style.display = 'block';
+                if (progressBar) progressBar.style.width = '0%';
+                if (progressText) progressText.textContent = 'Connecting...';
+
+                // Start SSE Download
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', `/models/${domain}/download`, true);
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                
+                let seenBytes = 0;
+                
+                xhr.onprogress = function() {
+                    const freshData = xhr.responseText.substring(seenBytes);
+                    const lines = freshData.split('\\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                if (data.status === 'start') {
+                                    if (progressText) progressText.textContent = '0%';
+                                } else if (data.status === 'progress') {
+                                    if (progressBar) progressBar.style.width = `${data.percentage}%`;
+                                    if (progressText) progressText.textContent = `${data.percentage}%`;
+                                } else if (data.status === 'complete') {
+                                    if (progressText) progressText.textContent = 'Verifying...';
+                                } else if (data.status === 'error') {
+                                    alert(`Download failed: ${data.message}`);
+                                    API.activeDownloads.delete(domain);
+                                    API.pollStatus(); // Reset UI
+                                }
+                            } catch (e) {
+                                console.warn("Failed to parse SSE line:", line);
+                            }
+                        }
+                    }
+                    seenBytes = xhr.responseText.lastIndexOf('\\n\\n'); 
+                    if (seenBytes === -1) seenBytes = 0; else seenBytes += 2;
+                };
+
+                xhr.onload = function() {
+                    API.activeDownloads.delete(domain);
+                    // Re-enable actions and hide progress
+                    if (actionsEl) actionsEl.style.display = 'flex';
+                    if (progressContainer) progressContainer.style.display = 'none';
+                    API.pollStatus(); // Refresh full UI to show delete button
+                };
+
+                xhr.onerror = function() {
+                    console.error("Download network error");
+                    API.activeDownloads.delete(domain);
+                    API.pollStatus();
+                };
+
+                xhr.send(JSON.stringify({ prompt: "" })); // Dummy payload
             },
 
             renderMarkdown(text) {
