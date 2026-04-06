@@ -245,30 +245,45 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-#### 3. Install llama-cpp-python (with CUDA)
+#### 3. Install llama-cpp-python (with CUDA) + Remaining Dependencies
 
-> **⚠️ Important:** `llama-cpp-python` must be installed **separately first** with CUDA wheels. Installing it via `pip install -r requirements.txt` alone will NOT enable GPU acceleration.
+Use the provided setup script — it auto-detects your CUDA version, installs the matching pre-built wheel, and falls back to a source build if the wheel is incompatible with your toolkit:
 
 ```bash
-# For CUDA 12.1+ (most modern NVIDIA GPUs)
-pip install llama-cpp-python \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
-
-# For CUDA 11.8 (older GPUs)
-pip install llama-cpp-python \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu118
+chmod +x setup.sh && ./setup.sh
 ```
 
-Verify GPU support:
+> **Why not just `pip install llama-cpp-python`?**
+> Pre-built CUDA wheels are compiled for a specific CUDA minor version (e.g. `cu121`). Installing the wrong wheel causes a silent `SIGILL` crash the first time a model is loaded — not at import time. The setup script detects your toolkit version, picks the nearest known wheel, verifies it actually loads without crashing, and falls back to a source build if needed.
+
+<details>
+<summary>Manual install (advanced)</summary>
+
+If you prefer to install manually, match the wheel tag to your CUDA version (`nvcc --version`):
+
 ```bash
-python -c "from llama_cpp import Llama; print('llama-cpp-python installed successfully')"
+# CUDA 12.1
+pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+
+# CUDA 11.8
+pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu118
+
+# Any CUDA version — build from source (slower but always correct)
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
 ```
 
-#### 4. Install Remaining Dependencies
+Verify the wheel actually works (import alone is not sufficient — CUDA code only runs on model load):
+
+```bash
+python -c "import llama_cpp; print('llama-cpp-python', llama_cpp.__version__, 'OK')"
+```
+
+Then install the rest of the dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
+</details>
 
 #### 5. Set Up Environment Variables
 
@@ -393,15 +408,8 @@ cd MELLM
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-# Install llama-cpp-python with CUDA support
-pip install llama-cpp-python \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
-
-# Verify GPU is detected
-python -c "from llama_cpp import Llama; import ctypes; print('OK')"
-
-# Install remaining dependencies
-pip install -r requirements.txt
+# Install llama-cpp-python + remaining dependencies
+chmod +x setup.sh && ./setup.sh
 ```
 
 #### Step 5 — Run MELLM

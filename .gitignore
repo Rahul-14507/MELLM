@@ -34,6 +34,10 @@ env/
 # IDEs & Editors
 .vscode/
 .idea/
+.claude/
+
+# Claude Code
+CLAUDE.md
 *.swp
 *.swo
 .DS_Store
