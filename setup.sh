@@ -101,15 +101,29 @@ build_from_source() {
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
+FORCE_CPU="${FORCE_CPU:-false}"
+
 log "Detecting CUDA version ..."
-CUDA_VER=$(cuda_version_from_nvcc)
-if [[ -z "$CUDA_VER" ]]; then
-    CUDA_VER=$(cuda_version_from_smi)
+CUDA_VER=""
+if [[ "$FORCE_CPU" != "true" ]]; then
+    CUDA_VER=$(cuda_version_from_nvcc)
+    if [[ -z "$CUDA_VER" ]]; then
+        CUDA_VER=$(cuda_version_from_smi)
+        if [[ -n "$CUDA_VER" ]]; then
+            # Verify if CUDA runtime libraries (libcudart) are installed/findable
+            if ! ldconfig -p 2>/dev/null | grep -q "libcudart.so"; then
+                warn "NVIDIA GPU detected via nvidia-smi, but libcudart.so (CUDA runtime) was not found."
+                warn "For GPU acceleration, install the CUDA Toolkit: 'sudo apt install nvidia-cuda-toolkit'"
+                warn "Falling back to CPU-only installation (or run with FORCE_CPU=true)."
+                CUDA_VER=""
+            fi
+        fi
+    fi
 fi
 
 if [[ -z "$CUDA_VER" ]]; then
-    warn "No CUDA detected. Installing CPU-only llama-cpp-python."
-    $PIP install llama-cpp-python --quiet
+    warn "No CUDA detected or fallback to CPU. Installing CPU-only llama-cpp-python from prebuilt wheels."
+    $PIP install llama-cpp-python --extra-index-url "${LLAMA_WHL_BASE}/cpu" --quiet
 else
     log "Detected CUDA $CUDA_VER"
     REQUESTED_TAG=$(cuda_tag_from_version "$CUDA_VER")

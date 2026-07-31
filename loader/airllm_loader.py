@@ -227,9 +227,9 @@ class ModelLoader:
             return model, None, load_time
 
         logger.info(f"Loading model: {model_id}")
-        start = time.time()
-
         gguf_path = self._get_gguf_path(model_id)
+
+        start = time.time()
 
         # In ModelLoader.get(), set n_ctx based on model file size
         # Large models (> 2GB) need a smaller context window to fit in VRAM

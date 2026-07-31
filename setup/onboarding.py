@@ -29,7 +29,7 @@ TAGLINE  = "Consumer-Hardware MoE Orchestration · Run specialist LLMs locally"
 DOMAIN_MODEL_OPTIONS = {
     "code": [
         {"label": "Fast",     "model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-         "repo": "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+         "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
          "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf", "size": "1.5B"},
         {"label": "Balanced", "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
          "repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
